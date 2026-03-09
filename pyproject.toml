@@ -1,22 +1,40 @@
 [project]
 name = "smcs-stock-prediction"
 version = "0.1.0"
-description = "Add your description here"
+description = "Financial Sentiment Analysis with Multi-Hardware Support"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.12.*"
 dependencies = [
-    "aiohttp>=3.13.3",
-    "en-core-web-sm",
-    "huggingface-hub>=1.5.0",
-    "pandas>=3.0.1",
     "polars>=1.38.1",
-    "pyarrow>=23.0.1",
-    "pytextrank>=3.3.0",
+    "transformers>=5.3.0",
+    "accelerate>=1.13.0",  
+    "torch",
+    "torchvision",
+    "torchaudio",
     "python-dotenv>=1.2.2",
-    "requests>=2.32.5",
-    "spacy>=3.8.11",
+    "tqdm>=4.67.3", 
     "trafilatura>=2.0.0",
+    "pytorch-triton-rocm>=3.1.0; sys_platform == 'linux'",
+    "aiohttp>=3.13.3",
 ]
 
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.2"
+explicit = true
+
 [tool.uv.sources]
-en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+# The 'Magic' for Portability:
+# If on Linux, use ROCm. If on Windows/Mac, use default PyPI (CPU/CUDA)
+torch = [
+  { index = "pytorch-rocm", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+  { index = "pytorch-rocm", marker = "sys_platform == 'linux'" },
+]
+torchaudio = [
+  { index = "pytorch-rocm", marker = "sys_platform == 'linux'" },
+]
+pytorch-triton-rocm = [
+  { index = "pytorch-rocm", marker = "sys_platform == 'linux'" },
+]
