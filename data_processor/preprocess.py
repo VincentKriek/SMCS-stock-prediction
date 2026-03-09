@@ -47,7 +47,7 @@ def convert_to_utc(time_str):
     return "Invalid date format"
 
 
-def date_inte(folder_path, saving_path):
+def date_inte(folder_path, saving_path, start_date=None, end_date=None):
     csv_files = [file for file in os.listdir(folder_path) if file.endswith('.csv')]
     for csv_file in csv_files:
         print('Starting: ' + csv_file)
@@ -59,17 +59,24 @@ def date_inte(folder_path, saving_path):
             df.rename(columns={'Datetime': 'Date'}, inplace=True)
         
         # Apply the conversion function
-        print(df["Date"])
+        # print(df["Date"])
         df['Date'] = df['Date'].apply(convert_to_utc)
-        print(df["Date"])
+        # print(df["Date"])
 
         # Convert the Date column to datetime format
         df['Date'] = pd.to_datetime(df['Date'], utc=True)
+
+        # Filter only between start and end date
+        if start_date:
+            df = df[df['Date'] > start_date]
+        if end_date:
+            df = df[df['Date'] < end_date]
+
         # Sort by Date column in descending order
         df = df.sort_values(by='Date', ascending=False)
-        
+
         # Output the result
-        print(df)
+        # print(df)
 
         df.to_csv(os.path.join(saving_path, csv_file), index=False)
         print('Done: ' + csv_file)
@@ -82,6 +89,9 @@ if __name__ == "__main__":
     stock_folder_path = 'stock_price_data_raw'
     stock_saving_path = 'stock_price_data_preprocessed'
 
-    date_inte(news_folder_path, news_saving_path)
-    date_inte(stock_folder_path, stock_saving_path)
+    start_date = pd.Timestamp('2020-01-01', tz='UTC')
+    end_date = pd.Timestamp('2022-01-01', tz='UTC')
+
+    date_inte(news_folder_path, news_saving_path, start_date=start_date, end_date=end_date)
+    date_inte(stock_folder_path, stock_saving_path, start_date=start_date, end_date=end_date)
 
