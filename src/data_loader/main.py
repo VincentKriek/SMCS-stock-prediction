@@ -24,15 +24,11 @@ def load_data():
     subfolder = "Stock_price"
     min_date = datetime.strptime("2019-01-01", "%Y-%m-%d")
     max_date = datetime.strptime("2020-01-01", "%Y-%m-%d")
-
-    # load stock price data
+    
+    # load data into lazyframe
     prices_lf = load_hf_prices_lazyframe(
         repo_id, subfolder, "full_history.zip", min_date, max_date
     )
-    
-    prices_lf = load_price_data(prices_lf, min_date, max_date)
-
-    # load data into lazyframe
     all_external_lf = load_hf_lazyframe(
         repo_id, subfolder, "All_external.csv", min_date, max_date
     )
@@ -40,13 +36,26 @@ def load_data():
         repo_id, subfolder, "nasdaq_exteral_data.csv", min_date, max_date
     )
 
+    # processing of price data
+    prices_lf = load_price_data(prices_lf, min_date, max_date)
+
     # processing of external news
     all_external_lf = load_external_data(all_external_lf, min_date, max_date)
 
     # processing of nasdaq news
     nasdaq_lf = load_nasdaq_data(nasdaq_lf, min_date, max_date)
 
+    combine_prices_parquet(min_date, max_date)
     combine_data_parquet(min_date, max_date)
+
+def combine_prices_parquet(min_date: datetime, max_date: datetime):
+    folders = [
+        Path("data/loader/batches/price/*.parquet"),
+    ]
+
+    pl.scan_parquet(folders, extra_columns="ignore").filter(
+        pl.col("Date").is_between(min_date, max_date)
+    ).sink_parquet(Path(f"data/loader/prices_loaded_{min_date.date()}_{max_date.date()}.parquet"))
 
 def combine_data_parquet(min_date, max_date):
     folders = [
