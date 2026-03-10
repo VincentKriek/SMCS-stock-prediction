@@ -1,67 +1,84 @@
-import polars as pl
+# this code has been generated with the help of GenAI
+
 import asyncio
-import trafilatura
-from typing import List
 from concurrent.futures import ProcessPoolExecutor
+import httpx
+import trafilatura
+import polars as pl
+from typing import List, Optional
 
-# Controls max network concurrency per async loop
-CONCURRENCY_LIMIT = 50
-
-# Number of parallel processes for CPU-bound extraction
-PROCESS_CHUNKS = 4
+# Constants
+CONCURRENCY_LIMIT = 40  # Number of simultaneous downloads
+MAX_RETRIES = 2
 
 
-# --------------------------
-# Async fetch wrapper
-# --------------------------
-async def fetch_article(url: str, semaphore: asyncio.Semaphore):
+async def download_html(
+    url: str, client: httpx.AsyncClient, semaphore: asyncio.Semaphore
+) -> Optional[str]:
+    """Purely downloads the raw HTML with retry logic."""
     if not url:
         return None
+
     async with semaphore:
-        try:
-            result = await trafilatura.async_fetch_url(
-                url, user_agent="Mozilla/5.0", timeout=15
-            )
-            return result
-        except Exception:
-            return None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                response = await client.get(url, timeout=12, follow_redirects=True)
+                if response.status_code == 200:
+                    return response.text
+                if response.status_code == 404:  # Don't retry broken links
+                    return None
+            except Exception:
+                if attempt == MAX_RETRIES:
+                    return None
+                await asyncio.sleep(1)  # Small backoff
+        return None
 
 
-async def download_chunk(urls: List[str]):
+def extract_content(html: Optional[str]) -> Optional[str]:
+    """CPU-bound task: Extracts text from HTML using trafilatura."""
+    if not html:
+        return None
+    # include_tables is important for financial news (earnings etc)
+    return trafilatura.extract(
+        html, include_comments=False, include_tables=True, favor_recall=True
+    )
+
+
+async def fetch_all_htmls(urls: List[str]) -> List[Optional[str]]:
+    """Handles the async network phase."""
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-    tasks = [fetch_article(url, semaphore) for url in urls]
-    return await asyncio.gather(*tasks)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/119.0.0.0"
+    }
+
+    async with httpx.AsyncClient(headers=headers, http2=True) as client:
+        tasks = [download_html(url, client, semaphore) for url in urls]
+        return await asyncio.gather(*tasks)
 
 
-def run_async_fetch(urls: List[str]) -> List[str]:
-    """Run a chunk of URLs in an asyncio loop"""
-    return asyncio.run(download_chunk(urls))
-
-
-# --------------------------
-# Main Polars integration
-# --------------------------
 def add_article_column_stream(lf: pl.LazyFrame, url_column="Url") -> pl.LazyFrame:
-    """
-    Efficiently fetch articles using async + multiple processes.
-    """
-    # 1️⃣ Get unique URLs
+    lf = lf.drop("Article")
+
+    # 1. Get unique URLs
     df_urls = lf.select(url_column).unique().collect()
     urls = df_urls[url_column].to_list()
-    if not urls:
-        return lf.with_columns(pl.lit(None).alias("Article"))
 
-    # 2️⃣ Split URLs into chunks for parallel processes
-    chunk_size = max(1, len(urls) // PROCESS_CHUNKS)
-    url_chunks = [urls[i : i + chunk_size] for i in range(0, len(urls), chunk_size)]
+    # 2. Network Phase: Fetch all HTML (Async)
+    raw_htmls = asyncio.run(fetch_all_htmls(urls))
 
-    # 3️⃣ Run parallel processes
-    with ProcessPoolExecutor(max_workers=PROCESS_CHUNKS) as executor:
-        results_chunks = list(executor.map(run_async_fetch, url_chunks))
+    # 3. CPU Phase: Extract text from HTML (Parallel)
+    with ProcessPoolExecutor() as executor:
+        articles = list(executor.map(extract_content, raw_htmls))
 
-    # 4️⃣ Flatten results
-    articles = [item for sublist in results_chunks for item in sublist]
-
-    # 5️⃣ Join back to the LazyFrame
+    # 4. Join back and Fallback
     mapping_df = pl.DataFrame({url_column: urls, "Article": articles})
-    return lf.join(mapping_df.lazy(), on=url_column, how="left")
+
+    return (
+        lf.join(mapping_df.lazy(), on=url_column, how="left")
+        .with_columns(pl.col("Article"))
+        .filter(
+            ~pl.col("Article").str.contains(
+                "Never miss a trade again with the fastest news alerts in the world!"
+            )  # filter out paywall protected articles
+        )
+    )

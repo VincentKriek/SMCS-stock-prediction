@@ -46,6 +46,18 @@ def load_data():
     # processing of nasdaq news
     nasdaq_lf = load_nasdaq_data(nasdaq_lf, min_date, max_date)
 
+    combine_data_parquet(min_date, max_date)
+
+def combine_data_parquet(min_date, max_date):
+    folders = [
+        Path("data/loader/batches/external/*.parquet"),
+        Path("data/loader/batches/nasdaq/*.parquet"),
+    ]
+
+    pl.scan_parquet(folders, extra_columns="ignore").filter(
+        pl.col("Date").is_between(min_date, max_date)
+    ).sink_parquet(Path(f"data/loader/news_loaded_{min_date}_{max_date}.parquet"))
+
 def load_price_data(lf, start_date, end_date):
     total_batches = ceil((end_date - start_date).days / BATCH_DAYS)
     existing_ranges = get_existing_ranges(Path("data/loader/batches/price"))
@@ -79,7 +91,7 @@ def load_external_data(lf, start_date, end_date):
     )
 
     with tqdm(total=total_batches, desc="Processing external batches") as pbar:
-        while current_date < end_date:
+        while current_date <= end_date:
             if batch_lf is not None:
                 batch_lf = (
                     batch_lf.pipe(add_article_column_stream)
@@ -108,7 +120,7 @@ def load_nasdaq_data(lf, start_date, end_date):
     )
 
     with tqdm(total=total_batches, desc="Processing nasdaq batches") as pbar:
-        while current_date < end_date:
+        while current_date <= end_date:
             if batch_lf is not None:
                 batch_lf = batch_lf.pipe(add_summary_column).pipe(
                     remove_unneccessary_columns
@@ -131,7 +143,7 @@ def dates_in_range(min_date, max_date):
 
 
 def create_batch(lf, current_date, end_date, existing_date_ranges):
-    next_current_date = current_date + timedelta(days=BATCH_DAYS)
+    next_current_date = min(current_date + timedelta(days=BATCH_DAYS), end_date)
 
     if current_date > end_date:
         return None, current_date, next_current_date, None, None

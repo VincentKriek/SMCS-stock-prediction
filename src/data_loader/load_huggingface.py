@@ -55,7 +55,10 @@ def load_hf_lazyframe(repo_id, subfolder, filename, min_date, max_date):
             .str.replace(" UTC", "")
             .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S", strict=False)
         )
-        .filter(pl.col("Date").is_between(min_date, max_date))
+        .filter(
+            pl.col("Date").is_between(min_date, max_date),
+            pl.col("Stock_symbol").is_not_null(),
+        )
     )
 
 def load_hf_prices_lazyframe(repo_id, subfolder, filename, min_date, max_date) -> pl.LazyFrame:
