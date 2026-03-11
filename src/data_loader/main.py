@@ -17,8 +17,8 @@ BATCH_DAYS = 30  # batch size in days
 def load_data():
     repo_id = os.environ["HF_REPO_ID"]
     subfolder = os.environ["HF_SUBFOLDER"]
-    min_date = datetime.strptime(os.environ["MIN_DATE"], "%Y-%m-%d")
-    max_date = datetime.strptime(os.environ["MAX_DATE"], "%Y-%m-%d")
+    min_date = datetime.strptime(os.environ["MIN_DATE"], "%Y-%m-%d").date()
+    max_date = datetime.strptime(os.environ["MAX_DATE"], "%Y-%m-%d").date()
 
     # load data into lazyframe
     if subfolder == "Stock_price":

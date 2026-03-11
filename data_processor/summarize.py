@@ -30,14 +30,20 @@ def new_sum(text, key_words, num_sentences):
     parser = PlaintextParser.from_string(text, tokenizer)
     initial_summary = summarizer(parser.document, num_sentences)
     # Increase weight
-    sentence_weights = increase_weight_for_key_words(parser.document.sentences, key_words)
+    sentence_weights = increase_weight_for_key_words(
+        parser.document.sentences, key_words
+    )
 
     # Combine weights from initial summary with additional weights
     for sentence in initial_summary:
-        sentence_weights[sentence] += 1  # Initial summary sentences get additional weight
+        sentence_weights[
+            sentence
+        ] += 1  # Initial summary sentences get additional weight
 
     # Select top sentences as final summary
-    final_summary = sorted(sentence_weights, key=sentence_weights.get, reverse=True)[:num_sentences]
+    final_summary = sorted(sentence_weights, key=sentence_weights.get, reverse=True)[
+        :num_sentences
+    ]
 
     # Output final summary
     final_summary_text = " ".join(str(sentence) for sentence in final_summary)
@@ -47,7 +53,7 @@ def new_sum(text, key_words, num_sentences):
 
 def from_csv_summarize(folder_path, saving_path):
     # 获取文件夹中所有CSV文件的列表
-    csv_files = [file for file in os.listdir(folder_path) if file.endswith('.csv')]
+    csv_files = [file for file in os.listdir(folder_path) if file.endswith(".csv")]
     a = time.time()
     # 遍历每个CSV文件
     for csv_file in csv_files:
@@ -67,15 +73,17 @@ def from_csv_summarize(folder_path, saving_path):
         num_sentences_value = 3
         # text_ratio = 0.25
         # 对text列进行操作，这里简单示例为将text列的内容转换为大写
-        df['New_text'] = df['Text'].apply(new_sum, key_words=key_words_value, num_sentences=num_sentences_value)
+        df["New_text"] = df["Text"].apply(
+            new_sum, key_words=key_words_value, num_sentences=num_sentences_value
+        )
         # df['New_text'] = df['Text'].apply(summarize, num_sentences=num_sentences_value)
         # 删除多余行，避免冗余
-        df = df.drop(columns=['Text'])
+        df = df.drop(columns=["Text"])
         # 删除mark列不为1的行
-        df = df[df['Mark'] == 1]
-        print(time.time()-a, "s")
+        df = df[df["Mark"] == 1]
+        print(time.time() - a, "s")
         # 保存修改后的DataFrame到CSV文件
-        df.to_csv(os.path.join(saving_path, symbol.upper()+".csv"), index=False)
+        df.to_csv(os.path.join(saving_path, symbol.upper() + ".csv"), index=False)
 
 
 if __name__ == "__main__":
@@ -86,4 +94,3 @@ if __name__ == "__main__":
     # key_words = {'AAPL', 'invest'}
     # new_sum(text, key_words, 4)
     # summarize(text, 4)
-
