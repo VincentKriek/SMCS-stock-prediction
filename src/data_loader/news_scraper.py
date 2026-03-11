@@ -63,6 +63,10 @@ def add_article_column_stream(lf: pl.LazyFrame, url_column="Url") -> pl.LazyFram
     df_urls = lf.select(url_column).unique().collect()
     urls = df_urls[url_column].to_list()
 
+    # exit if no urls
+    if not urls:
+        return lf.with_columns(pl.lit(None).alias("Article"))
+
     # 2. Network Phase: Fetch all HTML (Async)
     raw_htmls = asyncio.run(fetch_all_htmls(urls))
 
@@ -70,8 +74,11 @@ def add_article_column_stream(lf: pl.LazyFrame, url_column="Url") -> pl.LazyFram
     with ProcessPoolExecutor() as executor:
         articles = list(executor.map(extract_content, raw_htmls))
 
-    # 4. Join back and Fallback
-    mapping_df = pl.DataFrame({url_column: urls, "Article": articles})
+    # 4. Join back
+    mapping_df = pl.DataFrame(
+        {url_column: urls, "Article": articles},
+        schema={url_column: pl.Utf8, "Article": pl.Utf8},
+    )
 
     return (
         lf.join(mapping_df.lazy(), on=url_column, how="left")
