@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 import os
-from load_huggingface import load_hf_lazyframe
+from load_huggingface import load_hf_lazyframe, load_hf_prices_lazyframe
 from clean_data import remove_unneccessary_columns
 from news_scraper import add_article_column_stream
 from summarize import add_summary_column
@@ -15,12 +15,20 @@ BATCH_DAYS = 30  # batch size in days
 
 
 def load_data():
-    repo_id = os.environ["HF_REPO_ID"]
-    subfolder = os.environ["HF_SUBFOLDER"]
-    min_date = datetime.strptime(os.environ["MIN_DATE"], "%Y-%m-%d")
-    max_date = datetime.strptime(os.environ["MAX_DATE"], "%Y-%m-%d")
+    # repo_id = os.environ["HF_REPO_ID"]
+    # subfolder = os.environ["HF_SUBFOLDER"]
+    # min_date = datetime.strptime(os.environ["MIN_DATE"], "%Y-%m-%d")
+    # max_date = datetime.strptime(os.environ["MAX_DATE"], "%Y-%m-%d")
 
+    repo_id = "Zihan1004/FNSPID"
+    subfolder = "Stock_price"
+    min_date = datetime.strptime("2019-01-01", "%Y-%m-%d")
+    max_date = datetime.strptime("2020-01-01", "%Y-%m-%d")
+    
     # load data into lazyframe
+    prices_lf = load_hf_prices_lazyframe(
+        repo_id, subfolder, "full_history.zip", min_date, max_date
+    )
     all_external_lf = load_hf_lazyframe(
         repo_id, subfolder, "All_external.csv", min_date, max_date
     )
@@ -28,14 +36,26 @@ def load_data():
         repo_id, subfolder, "nasdaq_exteral_data.csv", min_date, max_date
     )
 
+    # processing of price data
+    prices_lf = load_price_data(prices_lf, min_date, max_date)
+
     # processing of external news
     all_external_lf = load_external_data(all_external_lf, min_date, max_date)
 
     # processing of nasdaq news
     nasdaq_lf = load_nasdaq_data(nasdaq_lf, min_date, max_date)
 
+    combine_prices_parquet(min_date, max_date)
     combine_data_parquet(min_date, max_date)
 
+def combine_prices_parquet(min_date: datetime, max_date: datetime):
+    folders = [
+        Path("data/loader/batches/price/*.parquet"),
+    ]
+
+    pl.scan_parquet(folders, extra_columns="ignore").filter(
+        pl.col("Date").is_between(min_date, max_date)
+    ).sink_parquet(Path(f"data/loader/prices_loaded_{min_date.date()}_{max_date.date()}.parquet"))
 
 def combine_data_parquet(min_date, max_date):
     folders = [
@@ -47,6 +67,29 @@ def combine_data_parquet(min_date, max_date):
         pl.col("Date").is_between(min_date, max_date)
     ).sink_parquet(Path(f"data/loader/news_loaded_{min_date}_{max_date}.parquet"))
 
+def load_price_data(lf, start_date, end_date):
+    total_batches = ceil((end_date - start_date).days / BATCH_DAYS)
+    existing_ranges = get_existing_ranges(Path("data/loader/batches/price"))
+
+    batch_lf, current_date, next_current_date, batch_start, batch_end = create_batch(
+        lf, start_date, end_date, existing_ranges
+    )
+
+    with tqdm(total=total_batches, desc="Processing price batches") as pbar:
+        while current_date < end_date:
+            if batch_lf is not None:
+                out_path = Path(
+                    f"data/loader/batches/price/{batch_start.date()}_{batch_end.date()}.parquet"
+                )
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                batch_lf.sink_parquet(out_path, compression="zstd")
+
+
+            batch_lf, current_date, next_current_date, batch_start, batch_end = (
+                create_batch(lf, next_current_date, end_date, existing_ranges)
+            )
+
+            pbar.update(1)
 
 def load_external_data(lf, start_date, end_date):
     total_batches = ceil((end_date - start_date).days / BATCH_DAYS)
