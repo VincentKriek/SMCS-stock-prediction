@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 load_dotenv()
 
-WORKERS = 2  # Can increase concurrency
+WORKERS = 4  # Can increase concurrency
 START_DATE = os.environ["MIN_DATE"]
 END_DATE = os.environ["MAX_DATE"]
 INPUT_FILE = Path(f"data/pre-processor/news_formatted_{START_DATE}_{END_DATE}.parquet")
