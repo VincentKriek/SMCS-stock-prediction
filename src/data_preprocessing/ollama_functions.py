@@ -1,8 +1,9 @@
 import asyncio
 import re
-
 from langchain_ollama import ChatOllama
 
+CONTEXT_WINDOW = 4096
+MAX_RETRIES = 1
 
 # -----------------------------
 # LLM configuration
@@ -12,27 +13,8 @@ llm = ChatOllama(
     model="qwen2.5:7b-instruct",
     temperature=0,
     num_predict=20,
+    num_ctx=CONTEXT_WINDOW,
 )
-
-
-# -----------------------------
-# Prompt builder (FNSPID format)
-# -----------------------------
-
-
-def build_text_block(rows):
-    blocks = []
-
-    for r in rows:
-        blocks.append(
-            f"""Evaluate sentiment for stock: {r['Stock_symbol']}
-
-News:
-Title: {r['Article_title']}
-Summary: {r['summary']}"""
-        )
-
-    return "\n\n###\n\n".join(blocks)
 
 
 def build_conversation(rows):
@@ -42,7 +24,9 @@ def build_conversation(rows):
 
 News:
 Title: {r['Article_title']}
-Summary: {r['summary']}"""
+Summary: {r['summary']}"""[
+        :CONTEXT_WINDOW
+    ]  # truncate input to match context window
 
     conversation = [
         {
@@ -69,24 +53,12 @@ If the provided text is a generic market update, a list of multiple stocks witho
     return conversation
 
 
-# -----------------------------
-# Output parsing
-# -----------------------------
-
-
 def parse_scores(text):
     """Extract a single sentiment score from LLM output"""
     match = re.search(r"[1-5]", text)
     if not match:
         raise ValueError(f"No valid score found in LLM output: {text}")
     return int(match.group())
-
-
-# -----------------------------
-# Batch scoring
-# -----------------------------
-
-MAX_RETRIES = 3
 
 
 async def score_batch(rows):
