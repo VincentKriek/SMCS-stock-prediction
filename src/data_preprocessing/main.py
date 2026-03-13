@@ -34,7 +34,7 @@ def aggregate_step(min_date, max_date):
     )
     input_stock_file = Path(f"data/loader/prices_loaded_{min_date}_{max_date}.parquet")
     output_file = Path(
-        f"data/pre-processor/prepared_date_{min_date}_{max_date}.parquet"
+        f"data/pre-processor/prepared_data_{min_date}_{max_date}.parquet"
     )
 
     news_lf = pl.scan_parquet(input_news_file)
