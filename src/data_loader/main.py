@@ -62,9 +62,7 @@ def combine_prices_parquet(min_date: datetime, max_date: datetime):
 
     pl.scan_parquet(folders, extra_columns="ignore").filter(
         pl.col("Date").is_between(min_date, max_date)
-    ).sink_parquet(
-        Path(f"data/loader/prices_loaded_{min_date.date()}_{max_date.date()}.parquet")
-    )
+    ).sink_parquet(Path(f"data/loader/prices_loaded_{min_date}_{max_date}.parquet"))
 
 
 def combine_news_parquet(min_date, max_date):
@@ -147,7 +145,7 @@ def load_nasdaq_data(lf, start_date, end_date):
                 )
 
                 out_path = Path(
-                    f"data/loader/batches/nasdaq/{batch_start.date()}_{batch_end.date()}.parquet"
+                    f"data/loader/batches/nasdaq/{batch_start}_{batch_end}.parquet"
                 )
                 batch_lf.sink_parquet(out_path, compression="zstd")
 

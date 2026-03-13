@@ -5,6 +5,7 @@ from pathlib import Path
 
 EXPECTED_COLS = ["date", "open", "high", "low", "close", "adj close", "volume"]
 
+
 def read_and_reorder_csv(csv_file: Path):
     # Read CSV normally
     df = pl.read_csv(csv_file, infer_schema_length=10000)
@@ -13,19 +14,26 @@ def read_and_reorder_csv(csv_file: Path):
     cols_in_file = df.columns
     cols_to_select = [c for c in EXPECTED_COLS if c in cols_in_file]
 
+    # get stock symbol
+    stock_symbol = Path(csv_file).stem
+
     # Reorder the columns, fix the types
     df = df.select(cols_to_select)
-    df = df.with_columns([
-        pl.col("date").cast(pl.Utf8),
-        pl.col("open").cast(pl.Float64),
-        pl.col("high").cast(pl.Float64),
-        pl.col("low").cast(pl.Float64),
-        pl.col("close").cast(pl.Float64),
-        pl.col("adj close").cast(pl.Float64),
-        pl.col("volume").cast(pl.Int64),
-    ])
+    df = df.with_columns(
+        [
+            pl.col("date").cast(pl.Utf8),
+            pl.col("open").cast(pl.Float64),
+            pl.col("high").cast(pl.Float64),
+            pl.col("low").cast(pl.Float64),
+            pl.col("close").cast(pl.Float64),
+            pl.col("adj close").cast(pl.Float64),
+            pl.col("volume").cast(pl.Int64),
+            pl.lit(stock_symbol).alias("Stock_symbol"),
+        ]
+    )
 
     return df
+
 
 def load_and_reorder_csvs(csv_files) -> pl.LazyFrame:
     """
@@ -35,6 +43,7 @@ def load_and_reorder_csvs(csv_files) -> pl.LazyFrame:
     dfs = [read_and_reorder_csv(f) for f in csv_files]
     df_all = pl.concat(dfs).rename({"date": "Date"})
     return pl.LazyFrame(df_all)
+
 
 def load_hf_lazyframe(repo_id, subfolder, filename, min_date, max_date):
     path = hf_hub_download(
@@ -61,7 +70,10 @@ def load_hf_lazyframe(repo_id, subfolder, filename, min_date, max_date):
         )
     )
 
-def load_hf_prices_lazyframe(repo_id, subfolder, filename, min_date, max_date) -> pl.LazyFrame:
+
+def load_hf_prices_lazyframe(
+    repo_id, subfolder, filename, min_date, max_date
+) -> pl.LazyFrame:
 
     # Download zip from Hugging Face
     zip_path = hf_hub_download(
@@ -79,18 +91,16 @@ def load_hf_prices_lazyframe(repo_id, subfolder, filename, min_date, max_date) -
 
     # Find all CSV files
     csv_files = [
-        p for p in extract_dir.rglob("*.csv")
+        p
+        for p in extract_dir.rglob("*.csv")
         if not p.name.startswith("._") and "__MACOSX" not in str(p)
     ]
 
-    lf = load_and_reorder_csvs(csv_files) # re-order columns in a consistent schema
+    lf = load_and_reorder_csvs(csv_files)  # re-order columns in a consistent schema
 
     # Process Date column and filter
-    return (
-        lf.with_columns(
-            pl.col("Date")
-            .str.replace(" UTC", "")
-            .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S", strict=False)
-        )
-        .filter(pl.col("Date").is_between(min_date, max_date))
-    )
+    return lf.with_columns(
+        pl.col("Date")
+        .str.replace(" UTC", "")
+        .str.strptime(pl.Datetime, "%Y-%m-%d", strict=False)
+    ).filter(pl.col("Date").is_between(min_date, max_date))

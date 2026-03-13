@@ -7,8 +7,6 @@ def aggregate_scores(news_lf, stock_lf, lambda_decay):
     news_lf = aggregate_scores_median(news_lf)
     news_lf = aggregate_scores_mode(news_lf)
 
-    print(stock_lf.head(10).collect())
-
     joined_lf = stock_lf.join(news_lf, on="Date", how="left")
 
     final_lf = joined_lf
