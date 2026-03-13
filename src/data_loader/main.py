@@ -33,7 +33,7 @@ def load_prices(repo_id, subfolder, min_date, max_date):
     )
 
     # processing of price data
-    prices_lf = load_price_data(prices_lf, min_date, max_date)
+    load_price_data(prices_lf, min_date, max_date)
 
     combine_prices_parquet(min_date, max_date)
 
@@ -47,10 +47,10 @@ def load_news(repo_id, subfolder, min_date, max_date):
     )
 
     # processing of external news
-    all_external_lf = load_external_data(all_external_lf, min_date, max_date)
+    load_external_data(all_external_lf, min_date, max_date)
 
     # processing of nasdaq news
-    nasdaq_lf = load_nasdaq_data(nasdaq_lf, min_date, max_date)
+    load_nasdaq_data(nasdaq_lf, min_date, max_date)
 
     combine_news_parquet(min_date, max_date)
 
@@ -90,7 +90,7 @@ def load_price_data(lf, start_date, end_date):
         while current_date < end_date:
             if batch_lf is not None:
                 out_path = Path(
-                    f"data/loader/batches/price/{batch_start.date()}_{batch_end.date()}.parquet"
+                    f"data/loader/batches/price/{batch_start}_{batch_end}.parquet"
                 )
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 batch_lf.sink_parquet(out_path, compression="zstd")
@@ -120,7 +120,7 @@ def load_external_data(lf, start_date, end_date):
                 )
 
                 out_path = Path(
-                    f"data/loader/batches/external/{batch_start.date()}_{batch_end.date()}.parquet"
+                    f"data/loader/batches/external/{batch_start}_{batch_end}.parquet"
                 )
                 batch_lf.sink_parquet(out_path, compression="zstd")
 
@@ -195,8 +195,9 @@ def get_existing_ranges(folder: Path):
     for f in folder.glob("*.parquet"):
         parts = f.stem.split("_")
         if len(parts) == 2:
-            start, end = datetime.fromisoformat(parts[0]), datetime.fromisoformat(
-                parts[1]
+            start, end = (
+                datetime.fromisoformat(parts[0]).date(),
+                datetime.fromisoformat(parts[1]).date(),
             )
             ranges.append((start, end))
     return ranges
