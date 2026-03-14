@@ -14,4 +14,8 @@ dependencies = [
     "huggingface-hub>=1.6.0",
     "httpx[http2]>=0.28.1",
     "numpy>=2.4.3",
+    "pandas>=3.0.1",
+    "gensim>=4.4.0",
+    "torch>=2.10.0",
+    "pyarrow>=23.0.1",
 ]
