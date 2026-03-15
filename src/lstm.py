@@ -29,6 +29,7 @@ class LazyHeadlineVectorizer:
 
         self.lf = None
         self.model = None
+        self.max_headline_len = None
         self.word2id = {}
 
 
@@ -46,24 +47,36 @@ class LazyHeadlineVectorizer:
                   and not t.isnumeric()]
         return tokens
     
-    def set_max_healdine_len(self):
+    def tokenize_lf(self):
+        self.lf = self.lf.with_columns(
+                tokenized_headline=pl.col(self.col_name).map_elements(
+                l.clean_tokenize,
+                return_dtype=pl.List(pl.String)
+            )
+        ).with_columns(
+            headline_len=pl.col("tokenized_headline").list.len()
+        )
 
+        # Set the max allowed healdine length for lstm to the 95th percentile
+        self.max_headline_len = int((
+            self.lf
+            .select("headline_len")
+            .quantile(0.95, interpolation="linear")
+            .collect()
+        ).item())
 
     # Iterator for Word2Vec
     class HeadlinesIterator:
-        def __init__(self, lf, col_name, tokenizer):
-            self.lf = lf
-            self.col_name = col_name
-            self.tokenizer = tokenizer
+        def __init__(self, lf):
+            self.lf: pl.LazyFrame = lf
 
         def __iter__(self):
-            # streaming=True avoids loading all rows into memory
-            for batch in self.lf.collect(streaming=True).iter_rows(named=True):
-                yield self.tokenizer(batch[self.col_name])
+            for row in self.lf.select("tokenized_headline").collect(streaming=True).iter_rows():
+                yield row[0]
 
     # Train Word2Vec lazily
     def train_word2vec(self):
-        sentences = self.HeadlinesIterator(self.lf, self.col_name, self.clean_tokenize)
+        sentences = self.HeadlinesIterator(self.lf)
         self.model = Word2Vec(
             sentences=sentences,
             vector_size=self.vector_size,
@@ -76,75 +89,52 @@ class LazyHeadlineVectorizer:
         self.word2id = {w: i + 1 for i, w in enumerate(self.model.wv.index_to_key)}
         self.word2id["<PAD>"] = 0
 
-    def headline_to_ids(self, headline):
-        tokens = self.clean_tokenize(headline)
-        ids = [self.word2id[t] for t in tokens if t in self.word2id]
-        return ids
-    
-    # LSTM needs equal length input sequences, add padding to equal sentence lengths
-    def pad_headline(self, ids, max_headline_len):
-        if len(ids) < max_headline_len:
-            ids = ids + [0] * (max_headline_len - len(ids))
-        else:
-            ids = ids[:max_headline_len]
-        return ids
-
-    def headline_to_sequence(self, headline, max_len):
-        ids = self.headline_to_ids(headline)
-        padded = self.pad_headline(ids, max_len)
-        return np.array(padded)
-    
-
-    # Add lazy column of embedded sentences
     def add_embedded_column(self):
+        def process(tokens):
+            ids = [self.word2id.get(t, 0) for t in tokens] # convert token to int
+
+            # LSTM needs equal length input sequences, add padding to equal sentence lengths
+            if len(ids) < self.max_headline_len:
+                ids = ids + [0] * (self.max_headline_len - len(ids))
+            else:
+                ids = ids[:self.max_headline_len]
+
+            return ids
+
         self.lf = self.lf.with_columns(
-            embedded_headline=pl.col(self.col_name).map_elements(
-                self.headline_to_sequence,
-                return_dtype=pl.List(pl.Float64)
+            embedded_headline=pl.col("tokenized_headline").map_elements(
+                process,
+                return_dtype=pl.List(pl.Int64)
             )
         )
+
         return self.lf
+    
+    def run(self, n):
+        self.load_headlines(n)
+        self.tokenize_lf()
+        self.train_word2vec()
+        self.build_vocab_id()
+        self.add_embedded_column()
 
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
 
-l.load_headlines(n=10_000)
-# print(l.lf.collect())
+# l.load_headlines(n=5)
+# # print(l.lf.collect())
 
-# Set a value for the maximum headline len
-headline_lens = l.lf.with_columns(
-        len_headline=pl.col(l.col_name).map_elements(
-        l.clean_tokenize,
-        return_dtype=pl.List(pl.String)
-    ).list.len()
-)
-print(headline_lens.collect())
-
-max_len = headline_lens.select("len_headline").max().collect().item()
-print(max_len)
-len_p95 = (
-    headline_lens
-    .select("len_headline")
-    .quantile(0.95, interpolation="linear")
-    .collect()
-)
-len_p95_value = len_p95["len_headline"].item()
-print(len_p95_value)
-
-
+# l.tokenize_lf()
 
 # l.train_word2vec()
 # l.build_vocab_id()
 
-# print(l.word2id)
-# h = l.lf.select(l.col_name).collect()
-# print(h)
-
-
-
 # l.add_embedded_column()
-# e = l.lf.select("embedded_headline").collect()
-# for em in e:
-#     print(e)
+
+l.run(n=5)
+
+print(l.word2id)
+e = l.lf.select(l.col_name, "embedded_headline").collect()
+for row in e.iter_rows():
+    print(row)
 
 # # ===== LSTM Encoder =====
 # class LSTM_Encoder(nn.Module):
