@@ -16,6 +16,7 @@ print("CUDA:", torch.cuda.is_available())
 nltk.download('punkt_tab')
 nltk.download('stopwords')
 
+
 class LazyHeadlineVectorizer:
     def __init__(self, parquet_path, col_name="Article_title", vector_size=128, window=5, min_count=1):
         self.parquet_path = parquet_path
@@ -71,7 +72,7 @@ class LazyHeadlineVectorizer:
             self.lf: pl.LazyFrame = lf
 
         def __iter__(self):
-            for row in self.lf.select("tokenized_headline").collect(streaming=True).iter_rows():
+            for row in self.lf.select("tokenized_headline").collect(engine="streaming").iter_rows():
                 yield row[0]
 
     # Train Word2Vec lazily
@@ -118,35 +119,24 @@ class LazyHeadlineVectorizer:
         self.add_embedded_column()
 
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
-
-# l.load_headlines(n=5)
-# # print(l.lf.collect())
-
-# l.tokenize_lf()
-
-# l.train_word2vec()
-# l.build_vocab_id()
-
-# l.add_embedded_column()
-
 l.run(n=5)
 
-print(l.word2id)
-e = l.lf.select(l.col_name, "embedded_headline").collect()
-for row in e.iter_rows():
-    print(row)
+# print(l.word2id)
+# e = l.lf.select(l.col_name, "embedded_headline").collect()
+# for row in e.iter_rows():
+#     print(row)
 
-# # ===== LSTM Encoder =====
-# class LSTM_Encoder(nn.Module):
-#     def __init__(self, input_dim, hidden_dim):
-#         super().__init__()
-#         # hidden_dim = dim of h_t
-#         # https://docs.pytorch.org/docs/stable/generated/torch.nn.LSTM.html
-#         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+# ===== LSTM Encoder =====
+class LSTM_Encoder(nn.Module):
+    def __init__(self, input_dim, hidden_dim):
+        super().__init__()
+        # hidden_dim = dim of h_t
+        # https://docs.pytorch.org/docs/stable/generated/torch.nn.LSTM.html
+        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
 
-#     def forward(self, x: torch.Tensor, h_in=None, mem_in=None):
-#         x = x.reshape(x.shape[0], -1)
-#         out, (h_out, c_out) = self.lstm(x, (h_in, mem_in))
-#         return out, h_out, c_out
+    def forward(self, x: torch.Tensor, h_in=None, mem_in=None):
+        x = x.reshape(x.shape[0], -1)
+        out, (h_out, c_out) = self.lstm(x, (h_in, mem_in))
+        return out, h_out, c_out
 
 
