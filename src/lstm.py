@@ -111,15 +111,31 @@ class LazyHeadlineVectorizer:
 
         return self.lf
     
+    # Map the Word2Vec embedding to each token in the vocab
+    def build_embedding_matrix(self):
+        vocab_size = len(self.word2id)
+        emb_dim = self.vector_size
+
+        matrix = np.zeros((vocab_size, emb_dim))
+
+        for word, idx in self.word2id.items():
+            if word in self.model.wv:
+                matrix[idx] = self.model.wv[word]
+
+        self.embedding_matrix = matrix
+    
     def run(self, n):
         self.load_headlines(n)
         self.tokenize_lf()
         self.train_word2vec()
         self.build_vocab_id()
         self.add_embedded_column()
+        self.build_embedding_matrix()
 
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
 l.run(n=5)
+
+print(l.embedding_matrix.shape)
 
 # print(l.word2id)
 # e = l.lf.select(l.col_name, "embedded_headline").collect()
@@ -129,7 +145,7 @@ l.run(n=5)
 # ===== LSTM Encoder =====
 class LSTM_Encoder(nn.Module):
     def __init__(self, input_dim, hidden_dim):
-        super().__init__()
+        super(LSTM_Encoder, self).__init__()
         # hidden_dim = dim of h_t
         # https://docs.pytorch.org/docs/stable/generated/torch.nn.LSTM.html
         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
