@@ -144,15 +144,44 @@ print(l.embedding_matrix.shape)
 
 # ===== LSTM Encoder =====
 class LSTM_Encoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, embedding_matrix, layer_dim=1):
         super(LSTM_Encoder, self).__init__()
+        self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
+        self.layer_dim = layer_dim
+        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.embedding.weight.data.copy_(torch.tensor(embedding_matrix)) # Copy the Word2Vec embeddings
+
         # hidden_dim = dim of h_t
-        # https://docs.pytorch.org/docs/stable/generated/torch.nn.LSTM.html
-        self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+
+        # TODO: Add attention mechanism layer
 
     def forward(self, x: torch.Tensor, h_in=None, mem_in=None):
-        x = x.reshape(x.shape[0], -1)
-        out, (h_out, c_out) = self.lstm(x, (h_in, mem_in))
+        # x.shape = (batch_size, seq_len, embed_dim)
+        x_embedding = self.embedding(x) # lookup the embedding
+
+        if h_in is None or mem_in is None:
+            h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
+            mem_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
+        out, (h_out, c_out) = self.lstm(x_embedding, (h_in, mem_in))
+            
+        # TODO: Add attention mechanism
+
         return out, h_out, c_out
 
 
+lstm = LSTM_Encoder(len(l.word2id), l.vector_size, 128, l.embedding_matrix)
+# print(lstm.embedding.weight)
+
+print(l.lf.head(5).collect())
+
+test_headline = l.lf.select("embedded_headline").collect()[0].item()
+test_headline = torch.tensor([test_headline], dtype=torch.long)
+
+lstm.forward(test_headline)
+
+# TODO: Next steps:
+# 1. Add attention mechanism on top of the lstm
+# 2. Train the LSTM on the 'train headlines'
+# 3. Somehow store a output vector h_t in a Lazyframe
