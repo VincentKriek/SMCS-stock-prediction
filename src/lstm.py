@@ -142,6 +142,37 @@ print(l.embedding_matrix.shape)
 # for row in e.iter_rows():
 #     print(row)
 
+# ===== Attention Mechanism =====
+# Based on: https://www.ijcai.org/proceedings/2020/0626.pdf
+class Attentive_Pooling(nn.Module):
+    def __init__(self, hidden_dim):
+        super(Attentive_Pooling, self).__init__()
+        self.w_1 = nn.Linear(hidden_dim, hidden_dim) # Matrix for memory
+        self.w_2 = nn.Linear(hidden_dim, hidden_dim) # Matrix for query
+        self.u = nn.Linear(hidden_dim, 1, bias=False) # scores how imporant h is
+
+    # LINEAR ADDITIVE ATTENTION MECHANISM EQ. (2) AND (3)
+    def forward(self, memory, query=None, mask=None):
+        '''
+        :param query:  (node, hidden)
+        :param memory: (node, hidden)
+        :param mask:
+        :return:
+        '''
+
+        # h = W1*h_t + W2*x_s === Eq. (2)
+        if query is None:
+            h = torch.tanh(self.w_1(memory))  # shape: (node, hidden)
+        else:
+            h = torch.tanh(self.w_1(memory) + self.w_2(query)) # shape: (node, hidden)
+
+        score = torch.squeeze(self.u(h), -1)  # score = u * h
+        if mask is not None:
+            score = score.masked_fill(mask.eq(0), -1e9) # set score = -infinity on masked places
+        alpha = F.softmax(score, -1)  # shape: (node)
+        s = torch.sum(torch.unsqueeze(alpha, -1) * memory, -2) # Eq. (3)
+        return s # shape: (hidden_dim, 1)
+
 # ===== LSTM Encoder =====
 class LSTM_Encoder(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim, embedding_matrix, layer_dim=1):
@@ -155,18 +186,29 @@ class LSTM_Encoder(nn.Module):
         # hidden_dim = dim of h_t
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
 
-        # TODO: Add attention mechanism layer
+        self.att = Attentive_Pooling(hidden_dim)
 
     def forward(self, x: torch.Tensor, h_in=None, mem_in=None):
-        # x.shape = (batch_size, seq_len, embed_dim)
+        # x.shape = (batch_size, seq_len)
+        # x_emb.shape = (batch_size, seq_len, embed_dim)
         x_embedding = self.embedding(x) # lookup the embedding
+
 
         if h_in is None or mem_in is None:
             h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
             mem_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
+
         out, (h_out, c_out) = self.lstm(x_embedding, (h_in, mem_in))
-            
-        # TODO: Add attention mechanism
+        # out.shape: (batch_size, seq_len, hidden_dim)
+        # h_out.shape: (batch_size, 1, hidden_dim)
+
+        # Apply attention mechanism
+        # TODO: Get the stock embedding for query
+        mask = (x != 0) # Mask to give no weight to the pad tokens in the attention
+        h_att = self.att(out, query=None, mask=mask)
+        print(h_att.shape)
+
+        return h_att
 
         return out, h_out, c_out
 
@@ -175,11 +217,20 @@ lstm = LSTM_Encoder(len(l.word2id), l.vector_size, 128, l.embedding_matrix)
 # print(lstm.embedding.weight)
 
 print(l.lf.head(5).collect())
+print(f"max_95th_len: {l.max_headline_len}")
 
-test_headline = l.lf.select("embedded_headline").collect()[0].item()
-test_headline = torch.tensor([test_headline], dtype=torch.long)
+test_headline = l.lf.select("embedded_headline").collect()[1].item()
+batch = [test_headline]
+test_headline = torch.tensor(batch, dtype=torch.long)
 
-lstm.forward(test_headline)
+h_att = lstm.forward(test_headline)
+
+# o, h, c = lstm.forward(test_headline)
+# print("\nout, h, c shapes:")
+# print(o.shape)
+# print(h.shape)
+# print(c.shape)
+
 
 # TODO: Next steps:
 # 1. Add attention mechanism on top of the lstm
