@@ -143,7 +143,7 @@ print(l.embedding_matrix.shape)
 #     print(row)
 
 # ===== Attention Mechanism =====
-# Based on: https://www.ijcai.org/proceedings/2020/0626.pdf
+# Based on code from: https://www.ijcai.org/proceedings/2020/0626.pdf
 class Attentive_Pooling(nn.Module):
     def __init__(self, hidden_dim):
         super(Attentive_Pooling, self).__init__()
@@ -188,11 +188,10 @@ class LSTM_Encoder(nn.Module):
 
         self.att = Attentive_Pooling(hidden_dim)
 
-    def forward(self, x: torch.Tensor, h_in=None, mem_in=None):
+    def forward(self, x: torch.Tensor, stock_embedding=None, h_in=None, mem_in=None):
         # x.shape = (batch_size, seq_len)
         # x_emb.shape = (batch_size, seq_len, embed_dim)
         x_embedding = self.embedding(x) # lookup the embedding
-
 
         if h_in is None or mem_in is None:
             h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
@@ -203,15 +202,11 @@ class LSTM_Encoder(nn.Module):
         # h_out.shape: (batch_size, 1, hidden_dim)
 
         # Apply attention mechanism
-        # TODO: Get the stock embedding for query
+        # TODO: Get the current stock embedding for query from the Graph, using the 'Stock_symbol'?
         mask = (x != 0) # Mask to give no weight to the pad tokens in the attention
-        h_att = self.att(out, query=None, mask=mask)
-        print(h_att.shape)
+        h_att = self.att(out, query=stock_embedding, mask=mask)
 
         return h_att
-
-        return out, h_out, c_out
-
 
 lstm = LSTM_Encoder(len(l.word2id), l.vector_size, 128, l.embedding_matrix)
 # print(lstm.embedding.weight)
@@ -223,13 +218,10 @@ test_headline = l.lf.select("embedded_headline").collect()[1].item()
 batch = [test_headline]
 test_headline = torch.tensor(batch, dtype=torch.long)
 
-h_att = lstm.forward(test_headline)
-
-# o, h, c = lstm.forward(test_headline)
-# print("\nout, h, c shapes:")
-# print(o.shape)
-# print(h.shape)
-# print(c.shape)
+# get stock emb from the graph
+stock_emb = None
+h_att = lstm(test_headline, stock_embedding=stock_emb)
+print(h_att)
 
 
 # TODO: Next steps:
