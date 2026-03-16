@@ -225,6 +225,9 @@ print(h_att)
 
 
 # TODO: Next steps:
-# 1. Add attention mechanism on top of the lstm
+# 1. Add attention mechanism on top of the lstm (Done??)
 # 2. Train the LSTM on the 'train headlines'
+#   How do we train the LSTM?
+#   - Is it done fully before the graph? So 1. train LSTM, 2. train rest => How do we get the stock_emb for in AttPooling?
+#   - Is it done at the same time as MDGNN?
 # 3. Somehow store a output vector h_t in a Lazyframe
