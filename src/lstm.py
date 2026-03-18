@@ -1,8 +1,9 @@
-import pandas as pd
 import polars as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
+import torch.optim as optim
 import numpy as np
 from gensim.models import Word2Vec
 from nltk.tokenize import word_tokenize
@@ -122,9 +123,6 @@ class LazyHeadlineVectorizer:
                 matrix[idx] = self.model.wv[word]
 
         self.embedding_matrix = matrix
-
-    def group_by_company(self):
-        self.x = None
     
     def run(self, n=None):
         self.load_headlines(n)
@@ -135,7 +133,7 @@ class LazyHeadlineVectorizer:
         self.build_embedding_matrix()
 
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
-l.run(n=10)
+l.run(n=10_000)
 
 
 # ===== Attention Mechanism =====
@@ -155,10 +153,14 @@ class Attentive_Pooling(nn.Module):
         :param mask:
         :return:
         '''
+        # print("IN ATT shapes:")
+        # print(memory.shape)
+        # print(query.shape)
 
         if query is None:
             h = torch.tanh(self.w_1(memory))  # shape: (node, hidden)
         else:
+            query = query.unsqueeze(1)
             h = torch.tanh(self.w_1(memory) + self.w_2(query))  # shape: (node, hidden)
 
         score = torch.squeeze(self.u(h), -1)  # score = u * h
@@ -184,6 +186,9 @@ class LSTM_Encoder(nn.Module):
 
         self.att = Attentive_Pooling(hidden_dim)
 
+        # Fully connected Layer from hidden_dim that will give the 'probs' for each possible next word
+        self.fc = nn.Linear(hidden_dim, vocab_size)
+
     def forward(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
         # x.shape = (batch_size, seq_len)
         # x_emb.shape = (batch_size, seq_len, embed_dim)
@@ -202,6 +207,9 @@ class LSTM_Encoder(nn.Module):
         mask = (x != 0) # Mask to give no weight to the pad tokens in the attention
         h_att = self.att(out, query=stock_emb, mask=mask)
 
+        logits = self.fc(h_att)
+        return logits # shape: (batch_size, vocab_size)
+
         return h_att
 
 num_stocks = l.lf.select(pl.col("Stock_symbol").n_unique()).collect().item()
@@ -215,7 +223,6 @@ lstm = LSTM_Encoder(
     layer_dim = 1
 )
 
-
 # print(l.lf.head(10).select(l.col_name).collect())
 print(l.lf.collect())
 
@@ -227,8 +234,12 @@ test_headline = torch.tensor(batch, dtype=torch.long)
 
 batch = [0]
 stock_ids = torch.tensor(batch, dtype=torch.long)
-h_att = lstm(test_headline, stock_ids)
-# print(h_att)
+logits = lstm(test_headline, stock_ids)
+probs = torch.softmax(logits, dim=1)
+# print(logits)
+# print(probs)
+# print(torch.sum(probs))
+
 
 # TODO: Next steps:
 # 1. Add attention mechanism on top of the lstm (Done??)
@@ -236,19 +247,89 @@ h_att = lstm(test_headline, stock_ids)
 ## Idea: learn the stock_embedding itself. Not from the graph, but from the data itself?
 # 3. Somehow store a output vector h_t in a Lazyframe
 
-# # Target for training in LSTM?? Predict next headline? next word inside a headline?
+# region Training
+
+# Map stock symbols (string) to ints:
+print("="*40)
+stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_list())
+stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
+
+# Collect embedded headlines from LazyFrame
+data = l.lf.select("embedded_headline", "Stock_symbol").collect().to_dicts()
+
+X_list = []
+Y_list = []
+stock_ids_list = []
+
+for row in data:
+    seq = row["embedded_headline"]
+    X_list.append(seq[:-1]) # all words except last
+    Y_list.append(seq[1:]) # next word as target (a 'shift' by one per word)
+    stock_ids_list.append(row["Stock_symbol"])
+
+# Convert lists to tensors
+X_tensor = torch.tensor(X_list, dtype=torch.long)
+Y_tensor = torch.tensor(Y_list, dtype=torch.long)
+stock_ids_tensor = torch.tensor([stock2id[symbol] for symbol in stock_ids_list], dtype=torch.long)
+print(X_tensor)
+print(Y_tensor)
+print(stock_ids_tensor)
+
+# Wrap in DataLoader for batching
+batch_size = 2
+dataset = TensorDataset(X_tensor, Y_tensor, stock_ids_tensor)
+loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+# ===== Training loop =====
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+lstm.to(device)
+
+criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore padding (=0) tokens
+optimizer = optim.Adam(lstm.parameters(), lr=0.001)
+
+print("Training")
+epochs = 5
+for epoch in range(epochs):
+    lstm.train()
+    total_loss = 0
+
+    for X_batch, Y_batch, stock_batch in loader:
+        X_batch = X_batch.to(device)
+        Y_batch = Y_batch.to(device)
+        stock_batch = stock_batch.to(device)
+        # print("Batch shapes:")
+        # print(X_batch.shape)
+        # print(stock_batch.shape)
+
+        optimizer.zero_grad()
+
+        # Forward pass
+        logits = lstm(X_batch, stock_batch)
+        # Expand logits to match target sequence length
+        logits = logits.unsqueeze(1).repeat(1, Y_batch.size(1), 1)
+
+        loss = criterion(logits.view(-1, logits.size(-1)), Y_batch.view(-1))
+
+        # Backprop
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss/len(loader):.4f}")
 
 
-groups = l.lf.group_by("Stock_symbol").agg([
-    pl.col("Article_title")
-]).collect(engine="streaming")
+# groups = l.lf.group_by("Stock_symbol").agg([
+#     pl.col("Article_title")
+# ]).collect(engine="streaming")
 
-print(groups)
-for row in groups.iter_rows(named=True):
-    stock = row["Stock_symbol"]
-    headlines = row["Article_title"] # list of [headline]
+# print(groups)
+# for row in groups.iter_rows(named=True):
+#     stock = row["Stock_symbol"]
+#     headlines = row["Article_title"] # list of [headline]
 
-    print(f"STOCK: {stock}")
-    print(len(headlines), end=": ")
-    for h in headlines:
-        print(h)
+#     print(f"STOCK: {stock}")
+#     print(len(headlines), end=": ")
+#     for h in headlines:
+#         print(h)
