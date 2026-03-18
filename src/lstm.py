@@ -152,7 +152,7 @@ class Attentive_Pooling(nn.Module):
         self.u = nn.Linear(hidden_dim, 1, bias=False) # scores how imporant h is
 
     # LINEAR ADDITIVE ATTENTION MECHANISM EQ. (2) AND (3)
-    def forward(self, memory, query=None, mask=None):
+    def forward(self, memory, mask=None):
         '''
         :param query:  (node, hidden)
         :param memory: (node, hidden)
@@ -160,11 +160,8 @@ class Attentive_Pooling(nn.Module):
         :return:
         '''
 
-        # h = W1*h_t + W2*x_s === Eq. (2)
-        if query is None:
-            h = torch.tanh(self.w_1(memory))  # shape: (node, hidden)
-        else:
-            h = torch.tanh(self.w_1(memory) + self.w_2(query)) # shape: (node, hidden)
+        # h = W1*h_t ~= Eq. (2)
+        h = torch.tanh(self.w_1(memory))  # shape: (node, hidden)
 
         score = torch.squeeze(self.u(h), -1)  # score = u * h
         if mask is not None:
@@ -188,7 +185,7 @@ class LSTM_Encoder(nn.Module):
 
         self.att = Attentive_Pooling(hidden_dim)
 
-    def forward(self, x: torch.Tensor, stock_embedding=None, h_in=None, mem_in=None):
+    def forward(self, x: torch.Tensor, h_in=None, mem_in=None):
         # x.shape = (batch_size, seq_len)
         # x_emb.shape = (batch_size, seq_len, embed_dim)
         x_embedding = self.embedding(x) # lookup the embedding
@@ -202,9 +199,8 @@ class LSTM_Encoder(nn.Module):
         # h_out.shape: (batch_size, 1, hidden_dim)
 
         # Apply attention mechanism
-        # TODO: Get the current stock embedding for query from the Graph, using the 'Stock_symbol'?
         mask = (x != 0) # Mask to give no weight to the pad tokens in the attention
-        h_att = self.att(out, query=stock_embedding, mask=mask)
+        h_att = self.att(out, mask=mask)
 
         return h_att
 
@@ -218,16 +214,11 @@ test_headline = l.lf.select("embedded_headline").collect()[1].item()
 batch = [test_headline]
 test_headline = torch.tensor(batch, dtype=torch.long)
 
-# get stock emb from the graph
-stock_emb = None
-h_att = lstm(test_headline, stock_embedding=stock_emb)
+h_att = lstm(test_headline)
 print(h_att)
 
 
 # TODO: Next steps:
 # 1. Add attention mechanism on top of the lstm (Done??)
-# 2. Train the LSTM on the 'train headlines'
-#   How do we train the LSTM?
-#   - Is it done fully before the graph? So 1. train LSTM, 2. train rest => How do we get the stock_emb for in AttPooling?
-#   - Is it done at the same time as MDGNN?
+# 2. Train the LSTM on the 'train headlines' (500 companies -> 500 diff training loops)
 # 3. Somehow store a output vector h_t in a Lazyframe
