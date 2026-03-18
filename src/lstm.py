@@ -148,7 +148,7 @@ class Attentive_Pooling(nn.Module):
         self.u = nn.Linear(hidden_dim, 1, bias=False) # scores how imporant h is
 
     # LINEAR ADDITIVE ATTENTION MECHANISM EQ. (2) AND (3)
-    def forward(self, memory, mask=None):
+    def forward(self, memory, query=None, mask=None):
         '''
         :param query:  (node, hidden)
         :param memory: (node, hidden)
@@ -156,8 +156,10 @@ class Attentive_Pooling(nn.Module):
         :return:
         '''
 
-        # h = W1*h_t ~= Eq. (2)
-        h = torch.tanh(self.w_1(memory))  # shape: (node, hidden)
+        if query is None:
+            h = torch.tanh(self.w_1(memory))  # shape: (node, hidden)
+        else:
+            h = torch.tanh(self.w_1(memory) + self.w_2(query))  # shape: (node, hidden)
 
         score = torch.squeeze(self.u(h), -1)  # score = u * h
         if mask is not None:
@@ -168,20 +170,21 @@ class Attentive_Pooling(nn.Module):
 
 # ===== LSTM Encoder =====
 class LSTM_Encoder(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, embedding_matrix, layer_dim=1):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, embedding_matrix, num_stocks, stock_emb_dim, layer_dim=1):
         super(LSTM_Encoder, self).__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.layer_dim = layer_dim
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.embedding.weight.data.copy_(torch.tensor(embedding_matrix)) # Copy the Word2Vec embeddings
+        self.stock_embedding = nn.Embedding(num_stocks, stock_emb_dim) # Learn the stock_emb from the data itself
 
         # hidden_dim = dim of h_t
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
 
         self.att = Attentive_Pooling(hidden_dim)
 
-    def forward(self, x: torch.Tensor, h_in=None, mem_in=None):
+    def forward(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
         # x.shape = (batch_size, seq_len)
         # x_emb.shape = (batch_size, seq_len, embed_dim)
         x_embedding = self.embedding(x) # lookup the embedding
@@ -195,13 +198,23 @@ class LSTM_Encoder(nn.Module):
         # h_out.shape: (batch_size, 1, hidden_dim)
 
         # Apply attention mechanism
+        stock_emb = self.stock_embedding(stock_ids) # (batch_size, stock_dim)
         mask = (x != 0) # Mask to give no weight to the pad tokens in the attention
-        h_att = self.att(out, mask=mask)
+        h_att = self.att(out, query=stock_emb, mask=mask)
 
         return h_att
 
-lstm = LSTM_Encoder(len(l.word2id), l.vector_size, 128, l.embedding_matrix)
-# print(lstm.embedding.weight)
+num_stocks = l.lf.select(pl.col("Stock_symbol").n_unique()).collect().item()
+lstm = LSTM_Encoder(
+    vocab_size=len(l.word2id),
+    embedding_dim=l.vector_size,
+    hidden_dim=128,
+    embedding_matrix=l.embedding_matrix,
+    num_stocks=num_stocks,
+    stock_emb_dim=128,
+    layer_dim = 1
+)
+
 
 # print(l.lf.head(10).select(l.col_name).collect())
 print(l.lf.collect())
@@ -212,15 +225,19 @@ test_headline = l.lf.select("embedded_headline").collect()[1].item()
 batch = [test_headline]
 test_headline = torch.tensor(batch, dtype=torch.long)
 
-h_att = lstm(test_headline)
+batch = [0]
+stock_ids = torch.tensor(batch, dtype=torch.long)
+h_att = lstm(test_headline, stock_ids)
 # print(h_att)
 
 # TODO: Next steps:
 # 1. Add attention mechanism on top of the lstm (Done??)
-# 2. Train the LSTM on the 'train headlines' (500 companies -> 500 diff training loops)
+# 2. Train the LSTM on the 'train headlines'
+## Idea: learn the stock_embedding itself. Not from the graph, but from the data itself?
 # 3. Somehow store a output vector h_t in a Lazyframe
 
 # # Target for training in LSTM?? Predict next headline? next word inside a headline?
+
 
 groups = l.lf.group_by("Stock_symbol").agg([
     pl.col("Article_title")
