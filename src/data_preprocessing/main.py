@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import polars as pl
 from dotenv import load_dotenv
+from datetime import datetime
 import asyncio
 
 load_dotenv()
@@ -40,7 +41,11 @@ def aggregate_step(min_date, max_date):
     news_lf = pl.scan_parquet(input_news_file)
     stock_lf = pl.scan_parquet(input_stock_file)
     final_lf = aggregate_scores(news_lf, stock_lf, LAMBDA_DECAY)
-    final_lf.sink_parquet(output_file)
+    final_lf.filter(
+        pl.col("Date").is_between(
+            datetime.fromisoformat(min_date), datetime.fromisoformat(max_date)
+        )
+    ).sink_parquet(output_file)
 
 
 if __name__ == "__main__":

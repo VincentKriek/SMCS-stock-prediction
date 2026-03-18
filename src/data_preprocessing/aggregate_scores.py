@@ -70,6 +70,7 @@ def aggregate_scores_mode(lf):
 
 
 def group_lf(lf):
+    lf = lf.filter(pl.col("Sentiment_llm").is_not_null())
     return lf.group_by(["Date", "Stock_symbol"]).agg(pl.all())
 
 
