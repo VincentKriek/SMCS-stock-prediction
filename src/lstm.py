@@ -33,7 +33,6 @@ class LazyHeadlineVectorizer:
         self.max_headline_len = None
         self.word2id = {}
 
-
     def load_headlines(self, n=None):
         self.lf = pl.scan_parquet(self.parquet_path)
         if n:
@@ -123,8 +122,11 @@ class LazyHeadlineVectorizer:
                 matrix[idx] = self.model.wv[word]
 
         self.embedding_matrix = matrix
+
+    def group_by_company(self):
+        self.x = None
     
-    def run(self, n):
+    def run(self, n=None):
         self.load_headlines(n)
         self.tokenize_lf()
         self.train_word2vec()
@@ -133,14 +135,8 @@ class LazyHeadlineVectorizer:
         self.build_embedding_matrix()
 
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
-l.run(n=5)
+l.run(n=10)
 
-print(l.embedding_matrix.shape)
-
-# print(l.word2id)
-# e = l.lf.select(l.col_name, "embedded_headline").collect()
-# for row in e.iter_rows():
-#     print(row)
 
 # ===== Attention Mechanism =====
 # Based on code from: https://www.ijcai.org/proceedings/2020/0626.pdf
@@ -207,7 +203,9 @@ class LSTM_Encoder(nn.Module):
 lstm = LSTM_Encoder(len(l.word2id), l.vector_size, 128, l.embedding_matrix)
 # print(lstm.embedding.weight)
 
-print(l.lf.head(5).collect())
+# print(l.lf.head(10).select(l.col_name).collect())
+print(l.lf.collect())
+
 print(f"max_95th_len: {l.max_headline_len}")
 
 test_headline = l.lf.select("embedded_headline").collect()[1].item()
@@ -215,10 +213,25 @@ batch = [test_headline]
 test_headline = torch.tensor(batch, dtype=torch.long)
 
 h_att = lstm(test_headline)
-print(h_att)
-
+# print(h_att)
 
 # TODO: Next steps:
 # 1. Add attention mechanism on top of the lstm (Done??)
 # 2. Train the LSTM on the 'train headlines' (500 companies -> 500 diff training loops)
 # 3. Somehow store a output vector h_t in a Lazyframe
+
+# # Target for training in LSTM?? Predict next headline? next word inside a headline?
+
+groups = l.lf.group_by("Stock_symbol").agg([
+    pl.col("Article_title")
+]).collect(engine="streaming")
+
+print(groups)
+for row in groups.iter_rows(named=True):
+    stock = row["Stock_symbol"]
+    headlines = row["Article_title"] # list of [headline]
+
+    print(f"STOCK: {stock}")
+    print(len(headlines), end=": ")
+    for h in headlines:
+        print(h)
