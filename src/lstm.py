@@ -30,6 +30,7 @@ class LazyHeadlineVectorizer:
         self.stop_words = set(stopwords.words("english"))
         self.punctuation = set(string.punctuation)
 
+        self.num_rows = None
         self.lf = None
         self.model = None
         self.max_headline_len = None
@@ -39,6 +40,7 @@ class LazyHeadlineVectorizer:
         self.lf = pl.scan_parquet(self.parquet_path)
         if n:
             self.lf = self.lf.head(n)
+        self.num_rows = self.lf.select(pl.len()).collect().item()
         return self.lf
 
     # Tokenizer for a single headline
@@ -151,8 +153,8 @@ class LazyHeadlineVectorizer:
         print("run() finished")
 
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
-l.run(n=10_000)
-print(l.lf.select(pl.len()).collect()) # #rows
+l.run(n=10)
+# print(l.lf.select(pl.len()).collect()) # #rows
 
 
 # ===== Attention Mechanism =====
@@ -242,60 +244,49 @@ lstm = LSTM_Encoder(
     layer_dim = 1
 )
 
-# print(l.lf.head(10).select(l.col_name).collect())
-print(l.lf.tail().collect())
-
-print(f"max_95th_len: {l.max_headline_len}")
-
-test_headline = l.lf.select("embedded_headline").collect()[1].item()
-batch = [test_headline]
-test_headline = torch.tensor(batch, dtype=torch.long)
-
-batch = [0]
-stock_ids = torch.tensor(batch, dtype=torch.long)
-logits = lstm(test_headline, stock_ids)
-probs = torch.softmax(logits, dim=1)
-# print(logits)
-# print(probs)
-# print(torch.sum(probs))
-
-
 # TODO: Next steps:
 # 1. Add attention mechanism on top of the lstm (Done??)
 # 2. Train the LSTM on the 'train headlines'
 # 3. Somehow store a output vector h_t in a Lazyframe
 
 # region Training
+def build_dataset(data, stock2id: dict[str, int]):
+    X_list, Y_list, stock_ids_list = [], [], []
+
+    for row in data:
+        seq = row["embedded_headline"]
+        X_list.append(seq[:-1]) # all words except last
+        Y_list.append(seq[1:]) # next word as target (a 'shift' by one per word)
+        stock_ids_list.append(row["Stock_symbol"])
+
+    X = torch.tensor(X_list, dtype=torch.long)
+    Y = torch.tensor(Y_list, dtype=torch.long)
+    stock_ids = torch.tensor([stock2id[s] for s in stock_ids_list], dtype=torch.long)
+
+    return TensorDataset(X, Y, stock_ids)
 
 # Map stock symbols (string) to ints:
 print("="*40)
+print("Loading Data")
+word2id = {word: idx for word, idx in l.word2id.items()}
+id2word = {idx: word for word, idx in l.word2id.items()}
+
 stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_list())
 stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
+id2stock = {idx: symbol for idx, symbol in enumerate(stocks)}
 
 # Collect embedded headlines from LazyFrame
-data = l.lf.select("embedded_headline", "Stock_symbol").collect().to_dicts()
+data = l.lf.select("row_index", "embedded_headline", "Stock_symbol", "Date")
+data = data.sort("Date")
 
-X_list = []
-Y_list = []
-stock_ids_list = []
+# Split into train and test
+train_ratio = 0.8
+split_date = data.select("Date").collect()[int(train_ratio * l.num_rows)].item()
+train_data = data.filter(pl.col("Date") <= split_date)
+test_data = data.filter(pl.col("Date") > split_date)
 
-for row in data:
-    seq = row["embedded_headline"]
-    X_list.append(seq[:-1]) # all words except last
-    Y_list.append(seq[1:]) # next word as target (a 'shift' by one per word)
-    stock_ids_list.append(row["Stock_symbol"])
-
-# Convert lists to tensors
-X_tensor = torch.tensor(X_list, dtype=torch.long)
-Y_tensor = torch.tensor(Y_list, dtype=torch.long)
-stock_ids_tensor = torch.tensor([stock2id[symbol] for symbol in stock_ids_list], dtype=torch.long)
-# print(X_tensor)
-# print(Y_tensor)
-# print(stock_ids_tensor)
-
-# Wrap in DataLoader for batching
-batch_size = 2
-dataset = TensorDataset(X_tensor, Y_tensor, stock_ids_tensor)
+dataset = build_dataset(train_data.collect(engine="streaming").to_dicts(), stock2id)
+batch_size = 2 # wrap in DataLoader for batching
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 # ===== Training loop =====
@@ -307,7 +298,7 @@ criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore padding (=0) tokens
 optimizer = optim.Adam(lstm.parameters(), lr=0.001)
 
 print("Training")
-epochs = 5
+epochs = 10
 for epoch in range(epochs):
     lstm.train()
     total_loss = 0
@@ -315,21 +306,20 @@ for epoch in range(epochs):
     progress_bar = tqdm.tqdm(loader, desc=f"Epoch {epoch+1}/{epochs}", leave=True)
 
     for X_batch, Y_batch, stock_batch in progress_bar:
-        X_batch = X_batch.to(device)
+        X_batch = X_batch.to(device) # shape: (batch_size, seq_len)
         Y_batch = Y_batch.to(device)
-        stock_batch = stock_batch.to(device)
-        # print("Batch shapes:")
-        # print(X_batch.shape)
-        # print(stock_batch.shape)
+        stock_batch = stock_batch.to(device) # shape: (batch_size)
 
         optimizer.zero_grad()
 
         # Forward pass
-        logits = lstm(X_batch, stock_batch)
+        logits = lstm(X_batch, stock_batch) # shape: (batch_size, vocab_size)
         # Expand logits to match target sequence length
-        logits = logits.unsqueeze(1).repeat(1, Y_batch.size(1), 1)
+        logits = logits.unsqueeze(1).repeat(1, Y_batch.size(1), 1) # shape: (batch_size, seq_len, vocab_size)
 
-        loss = criterion(logits.view(-1, logits.size(-1)), Y_batch.view(-1))
+        flat_logits = logits.view(-1, logits.size(-1)) # shape: (batch_size * seq_len, vocab_size)
+        flat_Y = Y_batch.view(-1) # shape: (batch_size * seq_len)
+        loss = criterion(flat_logits, flat_Y)
 
         # Backprop
         loss.backward()
@@ -341,19 +331,17 @@ for epoch in range(epochs):
 
     print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss/len(loader):.4f}")
 
+    # # For testing, look how the prediction of the next word changes over iters
+    # lstm.eval()
+    # with torch.no_grad():
+    #     stock_id = dataset.tensors[2][0].unsqueeze(0).to(device)
+    #     X = dataset.tensors[0][0].unsqueeze(0).to(device)
+    #     logits = lstm(X, stock_id)
+    #     probs = torch.softmax(logits, dim=-1)
+    #     pred_word_idx = torch.argmax(probs, dim=-1)
+    #     print("Pred next word for: ")
+    #     print(id2stock[stock_id[0].item()])
+    #     print(id2word[X[0][0].item()], end=" => ")
+    #     print(id2word[pred_word_idx.item()])
+
 # TODO: Test the lstm model to predict the next words of the headlines of the test set
-# REAL DATA: 
-
-# groups = l.lf.group_by("Stock_symbol").agg([
-#     pl.col("Article_title")
-# ]).collect(engine="streaming")
-
-# print(groups)
-# for row in groups.iter_rows(named=True):
-#     stock = row["Stock_symbol"]
-#     headlines = row["Article_title"] # list of [headline]
-
-#     print(f"STOCK: {stock}")
-#     print(len(headlines), end=": ")
-#     for h in headlines:
-#         print(h)
