@@ -10,6 +10,7 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 import nltk
 import string
+import tqdm
 
 print(torch.__version__)
 print("CUDA:", torch.cuda.is_available())
@@ -82,7 +83,8 @@ class LazyHeadlineVectorizer:
             sentences=sentences,
             vector_size=self.vector_size,
             window=self.window,
-            min_count=self.min_count
+            min_count=self.min_count,
+            epochs=3
         )
         return self.model
 
@@ -126,14 +128,31 @@ class LazyHeadlineVectorizer:
     
     def run(self, n=None):
         self.load_headlines(n)
+        print("")
         self.tokenize_lf()
         self.train_word2vec()
         self.build_vocab_id()
         self.add_embedded_column()
         self.build_embedding_matrix()
 
+    def run(self, n=None):
+        print("Loading headlines...")
+        self.load_headlines(n)
+        print("Tokenizing...")
+        self.tokenize_lf()
+        print("Training Word2Vec model...")
+        self.train_word2vec()
+        print("Building vocabulary IDs...")
+        self.build_vocab_id()
+        print("Adding embedded column...")
+        self.add_embedded_column()
+        print("Building embedding matrix...")
+        self.build_embedding_matrix()
+        print("run() finished")
+
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
 l.run(n=10_000)
+print(l.lf.select(pl.len()).collect()) # #rows
 
 
 # ===== Attention Mechanism =====
@@ -224,7 +243,7 @@ lstm = LSTM_Encoder(
 )
 
 # print(l.lf.head(10).select(l.col_name).collect())
-print(l.lf.collect())
+print(l.lf.tail().collect())
 
 print(f"max_95th_len: {l.max_headline_len}")
 
@@ -244,7 +263,6 @@ probs = torch.softmax(logits, dim=1)
 # TODO: Next steps:
 # 1. Add attention mechanism on top of the lstm (Done??)
 # 2. Train the LSTM on the 'train headlines'
-## Idea: learn the stock_embedding itself. Not from the graph, but from the data itself?
 # 3. Somehow store a output vector h_t in a Lazyframe
 
 # region Training
@@ -271,9 +289,9 @@ for row in data:
 X_tensor = torch.tensor(X_list, dtype=torch.long)
 Y_tensor = torch.tensor(Y_list, dtype=torch.long)
 stock_ids_tensor = torch.tensor([stock2id[symbol] for symbol in stock_ids_list], dtype=torch.long)
-print(X_tensor)
-print(Y_tensor)
-print(stock_ids_tensor)
+# print(X_tensor)
+# print(Y_tensor)
+# print(stock_ids_tensor)
 
 # Wrap in DataLoader for batching
 batch_size = 2
@@ -294,7 +312,9 @@ for epoch in range(epochs):
     lstm.train()
     total_loss = 0
 
-    for X_batch, Y_batch, stock_batch in loader:
+    progress_bar = tqdm.tqdm(loader, desc=f"Epoch {epoch+1}/{epochs}", leave=True)
+
+    for X_batch, Y_batch, stock_batch in progress_bar:
         X_batch = X_batch.to(device)
         Y_batch = Y_batch.to(device)
         stock_batch = stock_batch.to(device)
@@ -317,8 +337,12 @@ for epoch in range(epochs):
 
         total_loss += loss.item()
 
+        progress_bar.set_postfix(loss=loss.item())
+
     print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss/len(loader):.4f}")
 
+# TODO: Test the lstm model to predict the next words of the headlines of the test set
+# REAL DATA: 
 
 # groups = l.lf.group_by("Stock_symbol").agg([
 #     pl.col("Article_title")
