@@ -401,12 +401,20 @@ h_ts_tensor = torch.cat(h_ts, dim=0).numpy() # shape: (num_rows, hidden_dim)
 
 lf_h_att = pl.LazyFrame({
     "row_index": h_idx_tensor,
-    "lstm_embed": list(h_ts_tensor)  # store each row as a list/vector
+    "lstm_embed": list(h_ts_tensor) # store each row as a list
 })
 
 lf_joined = l.lf.join(lf_h_att, on="row_index", how="inner")
 
-print(lf_joined.sort("Date").collect())
+# print("="*60)
+# print(lf_joined.sort("Date").collect())
+# print(l.lf.sort("Date").collect())
 
-print("="*60)
-print(l.lf.sort("Date").collect())
+print("Writing to .parquet")
+parquet_path = "test_with_lstm.parquet"
+lf_joined.sink_parquet(parquet_path)
+print(f"Saved to {parquet_path}")
+
+# print("Loading witten file")
+# lf_loaded = pl.scan_parquet(parquet_path)
+# print(lf_loaded.collect())
