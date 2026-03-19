@@ -11,6 +11,7 @@ from nltk.corpus import stopwords
 import nltk
 import string
 import tqdm
+from datetime import datetime
 
 print(torch.__version__)
 print(torch.version.cuda)
@@ -155,8 +156,6 @@ class LazyHeadlineVectorizer:
 
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
 l.run(n=50)
-# print(l.lf.select(pl.len()).collect()) # #rows
-
 
 # ===== Attention Mechanism =====
 # Based on code from: https://www.ijcai.org/proceedings/2020/0626.pdf
@@ -169,16 +168,6 @@ class Attentive_Pooling(nn.Module):
 
     # LINEAR ADDITIVE ATTENTION MECHANISM EQ. (2) AND (3)
     def forward(self, memory, query=None, mask=None):
-        '''
-        :param query:  (node, hidden)
-        :param memory: (node, hidden)
-        :param mask:
-        :return:
-        '''
-        # print("IN ATT shapes:")
-        # print(memory.shape)
-        # print(query.shape)
-
         if query is None:
             h = torch.tanh(self.w_1(memory))  # shape: (node, hidden)
         else:
@@ -296,29 +285,72 @@ id2stock = {idx: symbol for idx, symbol in enumerate(stocks)}
 data = l.lf.select("row_index", "embedded_headline", "Stock_symbol", "Date")
 data = data.sort("Date")
 
+def train_val_test_split_ratio(
+    data: pl.LazyFrame,
+    batch_size: int,
+    train_ratio=0.8,
+    val_ratio=0.1
+):
+    # Split into train and test
+    split_date = data.select("Date").collect()[int(train_ratio * l.num_rows)].item()
+    train_data = data.filter(pl.col("Date") <= split_date)
+    test_data = data.filter(pl.col("Date") > split_date)
+
+    # Training-Validation
+    train_data_full = train_data.collect(engine="streaming").to_dicts()
+    split_idx = int(len(train_data_full) * (1 - val_ratio))
+    train_data_final = train_data_full[:split_idx]
+    val_data = train_data_full[split_idx:]
+
+    train_loader = DataLoader(build_dataset(train_data_final, stock2id), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(build_dataset(val_data, stock2id), batch_size=batch_size, shuffle=False)
+
+    # Testing
+    test_data_dicts = test_data.collect(engine="streaming").to_dicts()
+    test_loader = DataLoader(build_dataset(test_data_dicts, stock2id), batch_size=batch_size, shuffle=False)
+
+    return train_loader, val_loader, test_loader
+
+def train_val_test_split_date(
+    data: pl.LazyFrame,
+    batch_size: int,
+    train_start_date: datetime,
+    train_end_date: datetime,
+    test_start_date: datetime,
+    test_end_date: datetime,
+    val_ratio=0.1
+):
+    # Filter by explicit date ranges
+    train_data = data.filter((pl.col("Date") >= train_start_date) & (pl.col("Date") <= train_end_date))
+    test_data = data.filter((pl.col("Date") >= test_start_date) & (pl.col("Date") <= test_end_date))
+
+    # Training-Validation
+    train_data_full = train_data.collect(engine="streaming").to_dicts()
+    split_idx = int(len(train_data_full) * (1 - val_ratio))
+    train_data_final = train_data_full[:split_idx]
+    val_data = train_data_full[split_idx:]
+
+    train_loader = DataLoader(build_dataset(train_data_final, stock2id), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(build_dataset(val_data, stock2id), batch_size=batch_size, shuffle=False)
+
+    # Testing
+    test_data_dicts = test_data.collect(engine="streaming").to_dicts()
+    test_loader = DataLoader(build_dataset(test_data_dicts, stock2id), batch_size=batch_size, shuffle=False)
+
+    return train_loader, val_loader, test_loader
+
+
 # Split into train and test
-train_ratio = 0.8
-split_date = data.select("Date").collect()[int(train_ratio * l.num_rows)].item()
-train_data = data.filter(pl.col("Date") <= split_date)
-test_data = data.filter(pl.col("Date") > split_date)
+batch_size = 2
+# train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, train_ratio=0.8, val_ratio=0.1)
 
-dataset = build_dataset(train_data.collect(engine="streaming").to_dicts(), stock2id)
-batch_size = 2 # wrap in DataLoader for batching
-loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+start_train = datetime(2018, 1, 1)
+end_train = datetime(2018, 1, 15)
+start_test = datetime(2018, 1, 15)
+end_test = datetime(2018, 1, 30)
 
+train_loader, val_loader, test_loader = train_val_test_split_date(data, batch_size, train_start_date=start_train, train_end_date=end_train, test_start_date=start_test, test_end_date=end_test, val_ratio=0.1)
 
-# ===== Training =====
-train_data_full = train_data.collect(engine="streaming").to_dicts()
-val_ratio = 0.1
-split_idx = int(len(train_data_full) * (1 - val_ratio))
-train_data_final = train_data_full[:split_idx]
-val_data = train_data_full[split_idx:]
-
-train_dataset = build_dataset(train_data_final, stock2id)
-val_dataset = build_dataset(val_data, stock2id)
-
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 lstm.to(device)
@@ -381,11 +413,9 @@ for epoch in range(epochs):
 # region Testing
 
 print("Testing")
-test_data_dicts = test_data.collect(engine="streaming").to_dicts()
-test_dataset = build_dataset(test_data_dicts, stock2id)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-assert len(test_data_dicts) > 0, "test_data is empty. Probably n was too small, or test %"
+batch = next(iter(test_loader), None)
+assert batch is not None and len(batch) > 0, "test_data is empty. Probably n was too small, or test %"
 
 h_row_idxs = []
 h_ts = []
@@ -410,13 +440,15 @@ lf_joined = l.lf.join(lf_h_att, on="row_index", how="inner")
 
 # print("="*60)
 # print(lf_joined.sort("Date").collect())
-# print(l.lf.sort("Date").collect())
+
+start_date = lf_joined.select(pl.min("Date")).collect().item().date()
+end_date = lf_joined.select(pl.max("Date")).collect().item().date()
 
 print("Writing to .parquet")
-parquet_path = "test_with_lstm.parquet"
+parquet_path = f"lstm_embed_test_{start_date}_{end_date}.parquet"
 lf_joined.sink_parquet(parquet_path)
 print(f"Saved to {parquet_path}")
 
 print("Loading witten file")
 lf_loaded = pl.scan_parquet(parquet_path)
-print(lf_loaded.collect())
+print(lf_loaded.sort("Date").collect())
