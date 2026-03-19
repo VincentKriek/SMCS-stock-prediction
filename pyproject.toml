@@ -3,7 +3,7 @@ name = "smcs-stock-prediction"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = "==3.12.*"
+requires-python = "==3.11.*"
 dependencies = [
     "polars>=1.38.1",
     "python-dotenv>=1.2.2",
@@ -13,9 +13,10 @@ dependencies = [
     "sumy>=0.12.0",
     "huggingface-hub>=1.6.0",
     "httpx[http2]>=0.28.1",
-    "numpy>=2.4.3",
+    "numpy<2",
     "pandas>=3.0.1",
     "gensim>=4.4.0",
-    "torch>=2.10.0",
     "pyarrow>=23.0.1",
+    # "torch>=2.10.0",
+    "torch @ https://download.pytorch.org/whl/cu121/torch-2.2.0%2Bcu121-cp311-cp311-win_amd64.whl#sha256=d79324159c622243429ec214a86b8613c1d7d46fc4821374d324800f1df6ade1",
 ]

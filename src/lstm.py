@@ -13,6 +13,7 @@ import string
 import tqdm
 
 print(torch.__version__)
+print(torch.version.cuda)
 print("CUDA:", torch.cuda.is_available())
 
 nltk.download('punkt_tab')
@@ -201,6 +202,7 @@ class LSTM_Encoder(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         self.embedding.weight.data.copy_(torch.tensor(embedding_matrix)) # Copy the Word2Vec embeddings
         self.stock_embedding = nn.Embedding(num_stocks, stock_emb_dim) # Learn the stock_emb from the data itself
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # hidden_dim = dim of h_t
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
@@ -216,8 +218,8 @@ class LSTM_Encoder(nn.Module):
         x_embedding = self.embedding(x) # lookup the embedding
 
         if h_in is None or mem_in is None:
-            h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
-            mem_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
+            h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim, device=self.device)
+            mem_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim, device=self.device)
 
         out, (h_out, c_out) = self.lstm(x_embedding, (h_in, mem_in))
         # out.shape: (batch_size, seq_len, hidden_dim)
@@ -234,8 +236,8 @@ class LSTM_Encoder(nn.Module):
     def forward_for_ht(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
         x_embedding = self.embedding(x) # lookup the embedding
         if h_in is None or mem_in is None:
-            h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
-            mem_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
+            h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim, device=self.device)
+            mem_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim, device=self.device)
 
         out, (h_out, c_out) = self.lstm(x_embedding, (h_in, mem_in))
 
@@ -415,6 +417,6 @@ parquet_path = "test_with_lstm.parquet"
 lf_joined.sink_parquet(parquet_path)
 print(f"Saved to {parquet_path}")
 
-# print("Loading witten file")
-# lf_loaded = pl.scan_parquet(parquet_path)
-# print(lf_loaded.collect())
+print("Loading witten file")
+lf_loaded = pl.scan_parquet(parquet_path)
+print(lf_loaded.collect())
