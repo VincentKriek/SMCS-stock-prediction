@@ -153,7 +153,7 @@ class LazyHeadlineVectorizer:
         print("run() finished")
 
 l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
-l.run(n=10)
+l.run(n=50)
 # print(l.lf.select(pl.len()).collect()) # #rows
 
 
@@ -230,7 +230,19 @@ class LSTM_Encoder(nn.Module):
 
         logits = self.fc(h_att)
         return logits # shape: (batch_size, vocab_size)
+    
+    def forward_for_ht(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
+        x_embedding = self.embedding(x) # lookup the embedding
+        if h_in is None or mem_in is None:
+            h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
+            mem_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim)
 
+        out, (h_out, c_out) = self.lstm(x_embedding, (h_in, mem_in))
+
+        # Apply attention mechanism
+        stock_emb = self.stock_embedding(stock_ids) # (batch_size, stock_dim)
+        mask = (x != 0) # Mask to give no weight to the pad tokens in the attention
+        h_att = self.att(out, query=stock_emb, mask=mask)
         return h_att
 
 num_stocks = l.lf.select(pl.col("Stock_symbol").n_unique()).collect().item()
@@ -250,20 +262,23 @@ lstm = LSTM_Encoder(
 # 3. Somehow store a output vector h_t in a Lazyframe
 
 # region Training
+
 def build_dataset(data, stock2id: dict[str, int]):
-    X_list, Y_list, stock_ids_list = [], [], []
+    X_list, Y_list, stock_ids_list, row_idx_list = [], [], [], []
 
     for row in data:
         seq = row["embedded_headline"]
         X_list.append(seq[:-1]) # all words except last
         Y_list.append(seq[1:]) # next word as target (a 'shift' by one per word)
         stock_ids_list.append(row["Stock_symbol"])
+        row_idx_list.append(row["row_index"]) # store original row idx
 
     X = torch.tensor(X_list, dtype=torch.long)
     Y = torch.tensor(Y_list, dtype=torch.long)
     stock_ids = torch.tensor([stock2id[s] for s in stock_ids_list], dtype=torch.long)
+    row_idx_tensor = torch.tensor(row_idx_list, dtype=torch.long)
 
-    return TensorDataset(X, Y, stock_ids)
+    return TensorDataset(X, Y, stock_ids, row_idx_tensor)
 
 # Map stock symbols (string) to ints:
 print("="*40)
@@ -289,7 +304,19 @@ dataset = build_dataset(train_data.collect(engine="streaming").to_dicts(), stock
 batch_size = 2 # wrap in DataLoader for batching
 loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-# ===== Training loop =====
+
+# ===== Training =====
+train_data_full = train_data.collect(engine="streaming").to_dicts()
+val_ratio = 0.1
+split_idx = int(len(train_data_full) * (1 - val_ratio))
+train_data_final = train_data_full[:split_idx]
+val_data = train_data_full[split_idx:]
+
+train_dataset = build_dataset(train_data_final, stock2id)
+val_dataset = build_dataset(val_data, stock2id)
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 lstm.to(device)
@@ -297,19 +324,17 @@ lstm.to(device)
 criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore padding (=0) tokens
 optimizer = optim.Adam(lstm.parameters(), lr=0.001)
 
-print("Training")
-epochs = 10
+print("Training-Val")
+epochs = 5
 for epoch in range(epochs):
     lstm.train()
-    total_loss = 0
+    train_loss  = 0
 
-    progress_bar = tqdm.tqdm(loader, desc=f"Epoch {epoch+1}/{epochs}", leave=True)
-
-    for X_batch, Y_batch, stock_batch in progress_bar:
+    progress_bar = tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", leave=True)
+    for X_batch, Y_batch, stock_batch, _ in progress_bar:
         X_batch = X_batch.to(device) # shape: (batch_size, seq_len)
         Y_batch = Y_batch.to(device)
         stock_batch = stock_batch.to(device) # shape: (batch_size)
-
         optimizer.zero_grad()
 
         # Forward pass
@@ -321,15 +346,22 @@ for epoch in range(epochs):
         flat_Y = Y_batch.view(-1) # shape: (batch_size * seq_len)
         loss = criterion(flat_logits, flat_Y)
 
-        # Backprop
         loss.backward()
         optimizer.step()
-
-        total_loss += loss.item()
-
+        train_loss  += loss.item()
         progress_bar.set_postfix(loss=loss.item())
+    
+    # Validation
+    lstm.eval()
+    val_loss = 0
+    with torch.no_grad(): # freeze weights
+        for X_val, Y_val, stock_val, _ in val_loader:
+            X_val, Y_val, stock_val = X_val.to(device), Y_val.to(device), stock_val.to(device)
+            logits = lstm(X_val, stock_val)
+            logits = logits.unsqueeze(1).repeat(1, Y_val.size(1), 1)
+            val_loss += criterion(logits.view(-1, logits.size(-1)), Y_val.view(-1)).item()
 
-    print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss/len(loader):.4f}")
+    print(f"Epoch {epoch+1}: Train Loss={train_loss/len(train_loader):.4f}, Val Loss={val_loss/len(val_loader):.4f}")
 
     # # For testing, look how the prediction of the next word changes over iters
     # lstm.eval()
@@ -344,4 +376,37 @@ for epoch in range(epochs):
     #     print(id2word[X[0][0].item()], end=" => ")
     #     print(id2word[pred_word_idx.item()])
 
-# TODO: Test the lstm model to predict the next words of the headlines of the test set
+# region Testing
+
+print("Testing")
+test_data_dicts = test_data.collect(engine="streaming").to_dicts()
+test_dataset = build_dataset(test_data_dicts, stock2id)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+assert len(test_data_dicts) > 0, "test_data is empty. Probably n was too small, or test %"
+
+h_row_idxs = []
+h_ts = []
+lstm.eval()
+with torch.no_grad():
+    for X_test, Y_test, stock_test, row_idx in test_loader:
+        X_test, stock_test, row_idx = X_test.to(device), stock_test.to(device), row_idx.to(device)
+
+        h_att = lstm.forward_for_ht(X_test, stock_test)
+        h_row_idxs.append(row_idx.cpu())
+        h_ts.append(h_att.cpu())
+
+h_idx_tensor = torch.cat(h_row_idxs, dim=0).numpy()
+h_ts_tensor = torch.cat(h_ts, dim=0).numpy() # shape: (num_rows, hidden_dim)
+
+lf_h_att = pl.LazyFrame({
+    "row_index": h_idx_tensor,
+    "lstm_embed": list(h_ts_tensor)  # store each row as a list/vector
+})
+
+lf_joined = l.lf.join(lf_h_att, on="row_index", how="inner")
+
+print(lf_joined.sort("Date").collect())
+
+print("="*60)
+print(l.lf.sort("Date").collect())
