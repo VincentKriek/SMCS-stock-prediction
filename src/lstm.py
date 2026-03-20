@@ -158,21 +158,22 @@ class LazyHeadlineVectorizer:
         self.build_embedding_matrix()
         print("run() finished")
 
-start = datetime(2018, 1, 1)
-end = datetime(2018, 2, 1)
-l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", start_date=start, end_date=end)
-l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=5000)
+# start = datetime(2018, 1, 1)
+# end = datetime(2018, 2, 1)
+# l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", start_date=start, end_date=end)
+l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=50_000)
 
 l.run()
 
 # ===== Attention Mechanism =====
 # Based on code from: https://www.ijcai.org/proceedings/2020/0626.pdf
 class Attentive_Pooling(nn.Module):
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim, device):
         super(Attentive_Pooling, self).__init__()
-        self.w_1 = nn.Linear(hidden_dim, hidden_dim) # Matrix for memory
-        self.w_2 = nn.Linear(hidden_dim, hidden_dim) # Matrix for query
-        self.u = nn.Linear(hidden_dim, 1, bias=False) # scores how imporant h is
+        self.device = device
+        self.w_1 = nn.Linear(hidden_dim, hidden_dim, device=self.device) # Matrix for memory
+        self.w_2 = nn.Linear(hidden_dim, hidden_dim, device=self.device) # Matrix for query
+        self.u = nn.Linear(hidden_dim, 1, bias=False, device=self.device) # scores how imporant h is
 
     # LINEAR ADDITIVE ATTENTION MECHANISM EQ. (2) AND (3)
     def forward(self, memory, query=None, mask=None):
@@ -191,23 +192,23 @@ class Attentive_Pooling(nn.Module):
 
 # ===== LSTM Encoder =====
 class LSTM_Encoder(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, embedding_matrix, num_stocks, stock_emb_dim, layer_dim=1):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, embedding_matrix, num_stocks, stock_emb_dim, layer_dim=1, device="cpu"):
         super(LSTM_Encoder, self).__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
         self.layer_dim = layer_dim
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.device = device
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, device=self.device)
         self.embedding.weight.data.copy_(torch.tensor(embedding_matrix)) # Copy the Word2Vec embeddings
-        self.stock_embedding = nn.Embedding(num_stocks, stock_emb_dim) # Learn the stock_emb from the data itself
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.stock_embedding = nn.Embedding(num_stocks, stock_emb_dim, device=self.device) # Learn the stock_emb from the data itself
 
         # hidden_dim = dim of h_t
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True, device=self.device)
 
-        self.att = Attentive_Pooling(hidden_dim)
+        self.att = Attentive_Pooling(hidden_dim, device=self.device)
 
         # Fully connected Layer from hidden_dim that will give the 'probs' for each possible next word
-        self.fc = nn.Linear(hidden_dim, vocab_size)
+        self.fc = nn.Linear(hidden_dim, vocab_size, device=self.device)
 
     def forward(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
         # x.shape = (batch_size, seq_len)
@@ -245,6 +246,8 @@ class LSTM_Encoder(nn.Module):
         return h_att
 
 num_stocks = l.lf.select(pl.col("Stock_symbol").n_unique()).collect().item()
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 lstm = LSTM_Encoder(
     vocab_size=len(l.word2id),
     embedding_dim=l.vector_size,
@@ -252,7 +255,8 @@ lstm = LSTM_Encoder(
     embedding_matrix=l.embedding_matrix,
     num_stocks=num_stocks,
     stock_emb_dim=128,
-    layer_dim = 1
+    layer_dim = 1,
+    device=device
 )
 
 # region Training
@@ -344,7 +348,7 @@ def train_val_test_split_date(
 
 
 # Split into train and test
-batch_size = 2
+batch_size = 16
 train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, train_ratio=0.8, val_ratio=0.1)
 
 # start_train = datetime(2018, 1, 1)
@@ -353,10 +357,6 @@ train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_s
 # end_test = datetime(2018, 1, 30)
 
 # train_loader, val_loader, test_loader = train_val_test_split_date(data, batch_size, train_start_date=start_train, train_end_date=end_train, test_start_date=start_test, test_end_date=end_test, val_ratio=0.1)
-
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-lstm.to(device)
 
 criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore padding (=0) tokens
 optimizer = optim.Adam(lstm.parameters(), lr=0.001)
