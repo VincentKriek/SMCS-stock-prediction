@@ -359,15 +359,20 @@ train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_s
 # train_loader, val_loader, test_loader = train_val_test_split_date(data, batch_size, train_start_date=start_train, train_end_date=end_train, test_start_date=start_test, test_end_date=end_test, val_ratio=0.1)
 
 criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore padding (=0) tokens
-optimizer = optim.Adam(lstm.parameters(), lr=0.001)
+optimizer = optim.AdamW(lstm.parameters(), lr=0.001, weight_decay=1e-5) # AdamW add L2 regularization to punish large weights and prevent overfitting
+
+
+best_val_loss = float("inf")
+patience = 2
+counter = 0
 
 print("Training-Val")
-epochs = 5
-for epoch in range(epochs):
+max_epochs = 10
+for epoch in range(max_epochs):
     lstm.train()
     train_loss  = 0
 
-    progress_bar = tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", leave=True)
+    progress_bar = tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs}", leave=True)
     for X_batch, Y_batch, stock_batch, _ in progress_bar:
         X_batch = X_batch.to(device) # shape: (batch_size, seq_len)
         Y_batch = Y_batch.to(device)
@@ -398,7 +403,20 @@ for epoch in range(epochs):
             logits = logits.unsqueeze(1).repeat(1, Y_val.size(1), 1)
             val_loss += criterion(logits.view(-1, logits.size(-1)), Y_val.view(-1)).item()
 
+    # Early stopping if val doesn't improve for #patience times
+    if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        counter = 0
+        torch.save(lstm.state_dict(), "best_model.pt")
+    else:
+        counter += 1
+        if counter == patience:
+            print(f"Early stopping at epoch {epoch+1}")
+            break
+
     print(f"Epoch {epoch+1}: Train Loss={train_loss/len(train_loader):.4f}, Val Loss={val_loss/len(val_loader):.4f}")
+
+lstm.load_state_dict(torch.load("best_model.pt")) # load best model
 
     # # For testing, look how the prediction of the next word changes over iters
     # lstm.eval()
