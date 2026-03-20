@@ -161,7 +161,7 @@ class LazyHeadlineVectorizer:
 # start = datetime(2018, 1, 1)
 # end = datetime(2018, 2, 1)
 # l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", start_date=start, end_date=end)
-l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=50_000)
+l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=1_000)
 
 l.run()
 
@@ -188,7 +188,7 @@ class Attentive_Pooling(nn.Module):
             score = score.masked_fill(mask.eq(0), -1e9) # set score = -infinity on masked places
         alpha = F.softmax(score, -1)  # shape: (node)
         s = torch.sum(torch.unsqueeze(alpha, -1) * memory, -2) # Eq. (3)
-        return s # shape: (hidden_dim, 1)
+        return s # shape: (batch_size, hidden_dim)
 
 # ===== LSTM Encoder =====
 class LSTM_Encoder(nn.Module):
@@ -229,6 +229,7 @@ class LSTM_Encoder(nn.Module):
         h_att = self.att(out, query=stock_emb, mask=mask)
 
         logits = self.fc(h_att)
+
         return logits # shape: (batch_size, vocab_size)
     
     def forward_for_ht(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
@@ -355,7 +356,6 @@ train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_s
 # end_train = datetime(2018, 1, 15)
 # start_test = datetime(2018, 1, 15)
 # end_test = datetime(2018, 1, 30)
-
 # train_loader, val_loader, test_loader = train_val_test_split_date(data, batch_size, train_start_date=start_train, train_end_date=end_train, test_start_date=start_test, test_end_date=end_test, val_ratio=0.1)
 
 criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore padding (=0) tokens
@@ -367,7 +367,7 @@ patience = 2
 counter = 0
 
 print("Training-Val")
-max_epochs = 10
+max_epochs = 100
 for epoch in range(max_epochs):
     lstm.train()
     train_loss  = 0
@@ -381,18 +381,25 @@ for epoch in range(max_epochs):
 
         # Forward pass
         logits = lstm(X_batch, stock_batch) # shape: (batch_size, vocab_size)
-        # Expand logits to match target sequence length
+
+        # # Expand logits to match target sequence length
         logits = logits.unsqueeze(1).repeat(1, Y_batch.size(1), 1) # shape: (batch_size, seq_len, vocab_size)
 
         flat_logits = logits.view(-1, logits.size(-1)) # shape: (batch_size * seq_len, vocab_size)
         flat_Y = Y_batch.view(-1) # shape: (batch_size * seq_len)
-        loss = criterion(flat_logits, flat_Y)
+        print("Shapes")
+        print(logits.shape)
+        print(Y_batch.shape)
+        loss = criterion(logits, Y_batch)
+
 
         loss.backward()
         optimizer.step()
         train_loss  += loss.item()
         progress_bar.set_postfix(loss=loss.item())
+        break
     
+    break
     # Validation
     lstm.eval()
     val_loss = 0
@@ -400,7 +407,7 @@ for epoch in range(max_epochs):
         for X_val, Y_val, stock_val, _ in val_loader:
             X_val, Y_val, stock_val = X_val.to(device), Y_val.to(device), stock_val.to(device)
             logits = lstm(X_val, stock_val)
-            logits = logits.unsqueeze(1).repeat(1, Y_val.size(1), 1)
+            # logits = logits.unsqueeze(1).repeat(1, Y_val.size(1), 1)
             val_loss += criterion(logits.view(-1, logits.size(-1)), Y_val.view(-1)).item()
 
     # Early stopping if val doesn't improve for #patience times
