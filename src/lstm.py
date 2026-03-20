@@ -366,6 +366,9 @@ best_val_loss = float("inf")
 patience = 2
 counter = 0
 
+# TODO: I need to summ, not predict next word like here. So is training even needed?
+# Can't I just ude the 'tesing' loop? To just get the h_att? No loss, no optimizer no nothing?
+
 print("Training-Val")
 max_epochs = 100
 for epoch in range(max_epochs):
