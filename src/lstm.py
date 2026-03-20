@@ -22,27 +22,40 @@ nltk.download('stopwords')
 
 
 class LazyHeadlineVectorizer:
-    def __init__(self, parquet_path, col_name="Article_title", vector_size=128, window=5, min_count=1):
+    def __init__(self, parquet_path, col_name="Article_title", vector_size=128, window=5, min_count=1, n_rows=None, start_date=None, end_date=None):
         self.parquet_path = parquet_path
         self.col_name = col_name
         self.vector_size = vector_size
         self.window = window
         self.min_count = min_count
+        self.start_date = start_date
+        self.end_date = end_date # will be used inclusive
+        self.n_rows = n_rows
 
         self.stop_words = set(stopwords.words("english"))
         self.punctuation = set(string.punctuation)
 
-        self.num_rows = None
         self.lf = None
         self.model = None
         self.max_headline_len = None
         self.word2id = {}
 
-    def load_headlines(self, n=None):
-        self.lf = pl.scan_parquet(self.parquet_path)
-        if n:
-            self.lf = self.lf.head(n)
-        self.num_rows = self.lf.select(pl.len()).collect().item()
+    def load_headlines(self):
+        if self.start_date and self.end_date:
+            assert self.start_date < self.end_date, "Start date >= end date"
+            self.lf = pl.scan_parquet(self.parquet_path)
+            self.lf = self.lf.filter(
+                (pl.col("Date") >= self.start_date) &
+                (pl.col("Date") <= self.end_date)
+            )
+            self.n_rows = self.lf.select(pl.len()).collect().item()
+        elif self.n_rows:
+            self.lf = pl.scan_parquet(self.parquet_path, n_rows=self.n_rows)
+
+        assert self.lf is not None, "LazyFrame is None. Please enter valid dates or n_rows"
+
+        print(f"Num Rows: {self.n_rows}")
+
         return self.lf
 
     # Tokenizer for a single headline
@@ -130,18 +143,9 @@ class LazyHeadlineVectorizer:
 
         self.embedding_matrix = matrix
     
-    def run(self, n=None):
-        self.load_headlines(n)
-        print("")
-        self.tokenize_lf()
-        self.train_word2vec()
-        self.build_vocab_id()
-        self.add_embedded_column()
-        self.build_embedding_matrix()
-
-    def run(self, n=None):
+    def run(self):
         print("Loading headlines...")
-        self.load_headlines(n)
+        self.load_headlines()
         print("Tokenizing...")
         self.tokenize_lf()
         print("Training Word2Vec model...")
@@ -154,8 +158,12 @@ class LazyHeadlineVectorizer:
         self.build_embedding_matrix()
         print("run() finished")
 
-l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet")
-l.run(n=50)
+start = datetime(2018, 1, 1)
+end = datetime(2018, 2, 1)
+l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", start_date=start, end_date=end)
+l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=5000)
+
+l.run()
 
 # ===== Attention Mechanism =====
 # Based on code from: https://www.ijcai.org/proceedings/2020/0626.pdf
@@ -247,11 +255,6 @@ lstm = LSTM_Encoder(
     layer_dim = 1
 )
 
-# TODO: Next steps:
-# 1. Add attention mechanism on top of the lstm (Done??)
-# 2. Train the LSTM on the 'train headlines'
-# 3. Somehow store a output vector h_t in a Lazyframe
-
 # region Training
 
 def build_dataset(data, stock2id: dict[str, int]):
@@ -292,7 +295,7 @@ def train_val_test_split_ratio(
     val_ratio=0.1
 ):
     # Split into train and test
-    split_date = data.select("Date").collect()[int(train_ratio * l.num_rows)].item()
+    split_date = data.select("Date").collect()[int(train_ratio * l.n_rows)].item()
     train_data = data.filter(pl.col("Date") <= split_date)
     test_data = data.filter(pl.col("Date") > split_date)
 
@@ -342,14 +345,14 @@ def train_val_test_split_date(
 
 # Split into train and test
 batch_size = 2
-# train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, train_ratio=0.8, val_ratio=0.1)
+train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, train_ratio=0.8, val_ratio=0.1)
 
-start_train = datetime(2018, 1, 1)
-end_train = datetime(2018, 1, 15)
-start_test = datetime(2018, 1, 15)
-end_test = datetime(2018, 1, 30)
+# start_train = datetime(2018, 1, 1)
+# end_train = datetime(2018, 1, 15)
+# start_test = datetime(2018, 1, 15)
+# end_test = datetime(2018, 1, 30)
 
-train_loader, val_loader, test_loader = train_val_test_split_date(data, batch_size, train_start_date=start_train, train_end_date=end_train, test_start_date=start_test, test_end_date=end_test, val_ratio=0.1)
+# train_loader, val_loader, test_loader = train_val_test_split_date(data, batch_size, train_start_date=start_train, train_end_date=end_train, test_start_date=start_test, test_end_date=end_test, val_ratio=0.1)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
