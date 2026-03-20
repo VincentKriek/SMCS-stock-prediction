@@ -20,7 +20,6 @@ print("CUDA:", torch.cuda.is_available())
 nltk.download('punkt_tab')
 nltk.download('stopwords')
 
-
 class LazyHeadlineVectorizer:
     def __init__(self, parquet_path, col_name="Article_title", vector_size=128, window=5, min_count=1, n_rows=None, start_date=None, end_date=None):
         self.parquet_path = parquet_path
@@ -69,7 +68,7 @@ class LazyHeadlineVectorizer:
     def tokenize_lf(self):
         self.lf = self.lf.with_columns(
                 tokenized_headline=pl.col(self.col_name).map_elements(
-                l.clean_tokenize,
+                self.clean_tokenize,
                 return_dtype=pl.List(pl.String)
             )
         ).with_columns(
@@ -158,13 +157,6 @@ class LazyHeadlineVectorizer:
         self.build_embedding_matrix()
         print("run() finished")
 
-# start = datetime(2018, 1, 1)
-# end = datetime(2018, 2, 1)
-# l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", start_date=start, end_date=end)
-l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=1_000)
-
-l.run()
-
 # ===== Attention Mechanism =====
 # Based on code from: https://www.ijcai.org/proceedings/2020/0626.pdf
 class Attentive_Pooling(nn.Module):
@@ -188,8 +180,8 @@ class Attentive_Pooling(nn.Module):
             score = score.masked_fill(mask.eq(0), -1e9) # set score = -infinity on masked places
         alpha = F.softmax(score, -1)  # shape: (node)
         s = torch.sum(torch.unsqueeze(alpha, -1) * memory, -2) # Eq. (3)
-        return s # shape: (batch_size, hidden_dim)
-
+        return s # shape: (batch_size, hidden_dim
+    
 # ===== LSTM Encoder =====
 class LSTM_Encoder(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim, embedding_matrix, num_stocks, stock_emb_dim, layer_dim=1, device="cpu"):
@@ -210,6 +202,7 @@ class LSTM_Encoder(nn.Module):
         # Fully connected Layer from hidden_dim that will give the 'probs' for each possible next word
         self.fc = nn.Linear(hidden_dim, vocab_size, device=self.device)
 
+    # TODO: Remove this one/change it for in the whole model pipeline
     def forward(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
         # x.shape = (batch_size, seq_len)
         # x_emb.shape = (batch_size, seq_len, embed_dim)
@@ -246,240 +239,3 @@ class LSTM_Encoder(nn.Module):
         h_att = self.att(out, query=stock_emb, mask=mask)
         return h_att
 
-num_stocks = l.lf.select(pl.col("Stock_symbol").n_unique()).collect().item()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-lstm = LSTM_Encoder(
-    vocab_size=len(l.word2id),
-    embedding_dim=l.vector_size,
-    hidden_dim=128,
-    embedding_matrix=l.embedding_matrix,
-    num_stocks=num_stocks,
-    stock_emb_dim=128,
-    layer_dim = 1,
-    device=device
-)
-
-# region Training
-
-def build_dataset(data, stock2id: dict[str, int]):
-    X_list, Y_list, stock_ids_list, row_idx_list = [], [], [], []
-
-    for row in data:
-        seq = row["embedded_headline"]
-        X_list.append(seq[:-1]) # all words except last
-        Y_list.append(seq[1:]) # next word as target (a 'shift' by one per word)
-        stock_ids_list.append(row["Stock_symbol"])
-        row_idx_list.append(row["row_index"]) # store original row idx
-
-    X = torch.tensor(X_list, dtype=torch.long)
-    Y = torch.tensor(Y_list, dtype=torch.long)
-    stock_ids = torch.tensor([stock2id[s] for s in stock_ids_list], dtype=torch.long)
-    row_idx_tensor = torch.tensor(row_idx_list, dtype=torch.long)
-
-    return TensorDataset(X, Y, stock_ids, row_idx_tensor)
-
-# Map stock symbols (string) to ints:
-print("="*40)
-print("Loading Data")
-word2id = {word: idx for word, idx in l.word2id.items()}
-id2word = {idx: word for word, idx in l.word2id.items()}
-
-stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_list())
-stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
-id2stock = {idx: symbol for idx, symbol in enumerate(stocks)}
-
-# Collect embedded headlines from LazyFrame
-data = l.lf.select("row_index", "embedded_headline", "Stock_symbol", "Date")
-data = data.sort("Date")
-
-def train_val_test_split_ratio(
-    data: pl.LazyFrame,
-    batch_size: int,
-    train_ratio=0.8,
-    val_ratio=0.1
-):
-    # Split into train and test
-    split_date = data.select("Date").collect()[int(train_ratio * l.n_rows)].item()
-    train_data = data.filter(pl.col("Date") <= split_date)
-    test_data = data.filter(pl.col("Date") > split_date)
-
-    # Training-Validation
-    train_data_full = train_data.collect(engine="streaming").to_dicts()
-    split_idx = int(len(train_data_full) * (1 - val_ratio))
-    train_data_final = train_data_full[:split_idx]
-    val_data = train_data_full[split_idx:]
-
-    train_loader = DataLoader(build_dataset(train_data_final, stock2id), batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(build_dataset(val_data, stock2id), batch_size=batch_size, shuffle=False)
-
-    # Testing
-    test_data_dicts = test_data.collect(engine="streaming").to_dicts()
-    test_loader = DataLoader(build_dataset(test_data_dicts, stock2id), batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader, test_loader
-
-def train_val_test_split_date(
-    data: pl.LazyFrame,
-    batch_size: int,
-    train_start_date: datetime,
-    train_end_date: datetime,
-    test_start_date: datetime,
-    test_end_date: datetime,
-    val_ratio=0.1
-):
-    # Filter by explicit date ranges
-    train_data = data.filter((pl.col("Date") >= train_start_date) & (pl.col("Date") <= train_end_date))
-    test_data = data.filter((pl.col("Date") >= test_start_date) & (pl.col("Date") <= test_end_date))
-
-    # Training-Validation
-    train_data_full = train_data.collect(engine="streaming").to_dicts()
-    split_idx = int(len(train_data_full) * (1 - val_ratio))
-    train_data_final = train_data_full[:split_idx]
-    val_data = train_data_full[split_idx:]
-
-    train_loader = DataLoader(build_dataset(train_data_final, stock2id), batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(build_dataset(val_data, stock2id), batch_size=batch_size, shuffle=False)
-
-    # Testing
-    test_data_dicts = test_data.collect(engine="streaming").to_dicts()
-    test_loader = DataLoader(build_dataset(test_data_dicts, stock2id), batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader, test_loader
-
-
-# Split into train and test
-batch_size = 16
-train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, train_ratio=0.8, val_ratio=0.1)
-
-# start_train = datetime(2018, 1, 1)
-# end_train = datetime(2018, 1, 15)
-# start_test = datetime(2018, 1, 15)
-# end_test = datetime(2018, 1, 30)
-# train_loader, val_loader, test_loader = train_val_test_split_date(data, batch_size, train_start_date=start_train, train_end_date=end_train, test_start_date=start_test, test_end_date=end_test, val_ratio=0.1)
-
-criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore padding (=0) tokens
-optimizer = optim.AdamW(lstm.parameters(), lr=0.001, weight_decay=1e-5) # AdamW add L2 regularization to punish large weights and prevent overfitting
-
-
-best_val_loss = float("inf")
-patience = 2
-counter = 0
-
-# TODO: I need to summ, not predict next word like here. So is training even needed?
-# Can't I just ude the 'tesing' loop? To just get the h_att? No loss, no optimizer no nothing?
-
-print("Training-Val")
-max_epochs = 100
-for epoch in range(max_epochs):
-    lstm.train()
-    train_loss  = 0
-
-    progress_bar = tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs}", leave=True)
-    for X_batch, Y_batch, stock_batch, _ in progress_bar:
-        X_batch = X_batch.to(device) # shape: (batch_size, seq_len)
-        Y_batch = Y_batch.to(device)
-        stock_batch = stock_batch.to(device) # shape: (batch_size)
-        optimizer.zero_grad()
-
-        # Forward pass
-        logits = lstm(X_batch, stock_batch) # shape: (batch_size, vocab_size)
-
-        # # Expand logits to match target sequence length
-        logits = logits.unsqueeze(1).repeat(1, Y_batch.size(1), 1) # shape: (batch_size, seq_len, vocab_size)
-
-        flat_logits = logits.view(-1, logits.size(-1)) # shape: (batch_size * seq_len, vocab_size)
-        flat_Y = Y_batch.view(-1) # shape: (batch_size * seq_len)
-        print("Shapes")
-        print(logits.shape)
-        print(Y_batch.shape)
-        loss = criterion(logits, Y_batch)
-
-
-        loss.backward()
-        optimizer.step()
-        train_loss  += loss.item()
-        progress_bar.set_postfix(loss=loss.item())
-        break
-    
-    break
-    # Validation
-    lstm.eval()
-    val_loss = 0
-    with torch.no_grad(): # freeze weights
-        for X_val, Y_val, stock_val, _ in val_loader:
-            X_val, Y_val, stock_val = X_val.to(device), Y_val.to(device), stock_val.to(device)
-            logits = lstm(X_val, stock_val)
-            # logits = logits.unsqueeze(1).repeat(1, Y_val.size(1), 1)
-            val_loss += criterion(logits.view(-1, logits.size(-1)), Y_val.view(-1)).item()
-
-    # Early stopping if val doesn't improve for #patience times
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        counter = 0
-        torch.save(lstm.state_dict(), "best_model.pt")
-    else:
-        counter += 1
-        if counter == patience:
-            print(f"Early stopping at epoch {epoch+1}")
-            break
-
-    print(f"Epoch {epoch+1}: Train Loss={train_loss/len(train_loader):.4f}, Val Loss={val_loss/len(val_loader):.4f}")
-
-lstm.load_state_dict(torch.load("best_model.pt")) # load best model
-
-    # # For testing, look how the prediction of the next word changes over iters
-    # lstm.eval()
-    # with torch.no_grad():
-    #     stock_id = dataset.tensors[2][0].unsqueeze(0).to(device)
-    #     X = dataset.tensors[0][0].unsqueeze(0).to(device)
-    #     logits = lstm(X, stock_id)
-    #     probs = torch.softmax(logits, dim=-1)
-    #     pred_word_idx = torch.argmax(probs, dim=-1)
-    #     print("Pred next word for: ")
-    #     print(id2stock[stock_id[0].item()])
-    #     print(id2word[X[0][0].item()], end=" => ")
-    #     print(id2word[pred_word_idx.item()])
-
-# region Testing
-
-print("Testing")
-
-batch = next(iter(test_loader), None)
-assert batch is not None and len(batch) > 0, "test_data is empty. Probably n was too small, or test %"
-
-h_row_idxs = []
-h_ts = []
-lstm.eval()
-with torch.no_grad():
-    for X_test, Y_test, stock_test, row_idx in test_loader:
-        X_test, stock_test, row_idx = X_test.to(device), stock_test.to(device), row_idx.to(device)
-
-        h_att = lstm.forward_for_ht(X_test, stock_test)
-        h_row_idxs.append(row_idx.cpu())
-        h_ts.append(h_att.cpu())
-
-h_idx_tensor = torch.cat(h_row_idxs, dim=0).numpy()
-h_ts_tensor = torch.cat(h_ts, dim=0).numpy() # shape: (num_rows, hidden_dim)
-
-lf_h_att = pl.LazyFrame({
-    "row_index": h_idx_tensor,
-    "lstm_embed": list(h_ts_tensor) # store each row as a list
-})
-
-lf_joined = l.lf.join(lf_h_att, on="row_index", how="inner")
-
-# print("="*60)
-# print(lf_joined.sort("Date").collect())
-
-start_date = lf_joined.select(pl.min("Date")).collect().item().date()
-end_date = lf_joined.select(pl.max("Date")).collect().item().date()
-
-print("Writing to .parquet")
-parquet_path = f"lstm_embed_test_{start_date}_{end_date}.parquet"
-lf_joined.sink_parquet(parquet_path)
-print(f"Saved to {parquet_path}")
-
-print("Loading witten file")
-lf_loaded = pl.scan_parquet(parquet_path)
-print(lf_loaded.sort("Date").collect())
