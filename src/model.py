@@ -13,7 +13,7 @@ from datetime import datetime
 # end = datetime(2018, 2, 1)
 # l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", start_date=start, end_date=end)
 # l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=1_000)
-l = LazyHeadlineVectorizer("../prepared_data_2018-01-01_2023-12-31.parquet", n_rows=20)
+l = LazyHeadlineVectorizer("../prepared_data_2018-01-01_2023-12-31.parquet", n_rows=10)
 
 # l.load_headlines()
 
@@ -22,6 +22,8 @@ l = LazyHeadlineVectorizer("../prepared_data_2018-01-01_2023-12-31.parquet", n_r
 
 l.run()
 l.lf = l.lf.drop("Sentiment_llm_mean_filled", "Sentiment_llm_median_filled", "Sentiment_llm_mode_filled")
+# print(l.lf.select("row_index").collect().head(10))
+
 
 print("\n===== Schema after vectorizing headlines =====:")
 print(l.lf.collect().schema) # TODO: is Article_tile a List[str]? or only a str?
@@ -91,10 +93,8 @@ def build_dataset(
         row_idx = row["row_index"][0] if row["row_index"] is not None else -1 # TODO: valid? use [0], as we've concatenated the headlines of these rows already?
         row_idx_list.append(row_idx)
 
-    X_text = torch.tensor(X_text_list, dtype=torch.float32) # shape: (#rows, #max_headline_len)
+    X_text = torch.tensor(X_text_list, dtype=torch.long) # shape: (#rows, #max_headline_len)
     X_num = torch.tensor(X_num_list, dtype=torch.float32) # shape: (#rows, #features)
-    print(X_text.shape)
-    print(X_num.shape)
     Y = torch.tensor(Y_list, dtype=torch.float32) # shape: (#rows,)
     stock_ids = torch.tensor(stock_ids_list, dtype=torch.long)
     row_idx_tensor = torch.tensor(row_idx_list, dtype=torch.long)
@@ -114,9 +114,9 @@ dataset = build_dataset(
     max_headline_len=l.max_headline_len
 )
 
-print("\nDataset:")
-for t in dataset.tensors:
-    print(t)
+# print("\nDataset:")
+# for t in dataset.tensors:
+#     print(t)
 
 def train_val_test_split_ratio(
     data: pl.LazyFrame,
@@ -183,7 +183,7 @@ def train_val_test_split_date(
     return train_loader, val_loader, test_loader
 
 # Split into train and test
-batch_size = 16
+batch_size = 4
 train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, max_headline_l=l.max_headline_len, train_ratio=0.8, val_ratio=0.1)
 
 # start_train = datetime(2018, 1, 1)
@@ -192,7 +192,7 @@ train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_s
 # end_test = datetime(2018, 1, 30)
 # train_loader, val_loader, test_loader = train_val_test_split_date(data, batch_size, train_start_date=start_train, train_end_date=end_train, test_start_date=start_test, test_end_date=end_test, val_ratio=0.1)
 
-criterion = nn.CrossEntropyLoss(ignore_index=0) # ignore padding (=0) tokens
+criterion = nn.CrossEntropyLoss()
 optimizer = optim.AdamW(lstm.parameters(), lr=0.001, weight_decay=1e-5) # AdamW add L2 regularization to punish large weights and prevent overfitting
 
 
@@ -206,31 +206,30 @@ counter = 0
 # 3. Update the training loop (add model layers, make compatible with diff #features)
 
 print("Training-Val")
-max_epochs = 100
+max_epochs = 5
 for epoch in range(max_epochs):
+    # Training
     lstm.train()
     train_loss  = 0
-
     progress_bar = tqdm.tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs}", leave=True)
-    for X_batch, Y_batch, stock_batch, _ in progress_bar:
-        X_batch = X_batch.to(device) # shape: (batch_size, seq_len)
-        Y_batch = Y_batch.to(device)
+    for X_text_batch, X_num_batch, Y_batch, stock_batch, _ in progress_bar:
+        X_text_batch = X_text_batch.to(device) # shape: (batch_size, seq_len)
+        X_num_batch = X_num_batch.to(device) # shape: (batch_size, #features)
+        Y_batch = Y_batch.to(device) # shape: (batch_size)
         stock_batch = stock_batch.to(device) # shape: (batch_size)
+
         optimizer.zero_grad()
 
-        # Forward pass
-        logits = lstm(X_batch, stock_batch) # shape: (batch_size, vocab_size)
+        # FOR FULL MODEL:
+        # LSTM Layer
+        # TODO: Should we just pass empty headlines (days when there where none to the model? or ignore/mask it somehow)
+        h_att = lstm(X_text_batch, stock_batch) # shape: (batch_size, hidden_dim)
 
-        # # Expand logits to match target sequence length
-        logits = logits.unsqueeze(1).repeat(1, Y_batch.size(1), 1) # shape: (batch_size, seq_len, vocab_size)
+        # TODO: REPLACE GNN, MLP LAYERS HERE
+        head = nn.Linear(h_att.shape[1], 1).to(device) # dummy layer for now
+        logits = head(h_att).squeeze(-1)  # shape: should be (batch_size,)
 
-        flat_logits = logits.view(-1, logits.size(-1)) # shape: (batch_size * seq_len, vocab_size)
-        flat_Y = Y_batch.view(-1) # shape: (batch_size * seq_len)
-        print("Shapes")
-        print(logits.shape)
-        print(Y_batch.shape)
         loss = criterion(logits, Y_batch)
-
 
         loss.backward()
         optimizer.step()
@@ -241,11 +240,20 @@ for epoch in range(max_epochs):
     lstm.eval()
     val_loss = 0
     with torch.no_grad(): # freeze weights
-        for X_val, Y_val, stock_val, _ in val_loader:
-            X_val, Y_val, stock_val = X_val.to(device), Y_val.to(device), stock_val.to(device)
-            logits = lstm(X_val, stock_val)
-            # logits = logits.unsqueeze(1).repeat(1, Y_val.size(1), 1)
-            val_loss += criterion(logits.view(-1, logits.size(-1)), Y_val.view(-1)).item()
+        for X_text_val, X_num_val, Y_val, stock_val, _ in val_loader:
+            X_text_val = X_text_val.to(device)
+            X_num_val = X_num_val.to(device)
+            Y_val = Y_val.to(device)
+            stock_val = stock_val.to(device)
+
+            # LSTM layer
+            h_att = lstm(X_text_val, stock_val)
+
+            # TODO: REPLACE GNN, MLP LAYERS HERE
+            head = nn.Linear(h_att.shape[1], 1).to(device) # dummy layer for now
+            logits = head(h_att).squeeze(-1)  # shape: should be (batch_size,)
+
+            val_loss += criterion(logits, Y_val).item()
 
     # Early stopping if val doesn't improve for #patience times
     if val_loss < best_val_loss:
@@ -269,36 +277,54 @@ print("Testing")
 batch = next(iter(test_loader), None)
 assert batch is not None and len(batch) > 0, "test_data is empty. Probably n was too small, or test %"
 
-h_row_idxs = []
-h_ts = []
+all_row_idxs = []
+all_preds = []
+
 lstm.eval()
 with torch.no_grad():
-    for X_test, Y_test, stock_test, row_idx in test_loader:
-        X_test, stock_test, row_idx = X_test.to(device), stock_test.to(device), row_idx.to(device)
+    for X_text_test, X_num_test, Y_test, stock_test, row_idx in test_loader:
+        X_text_test = X_text_test.to(device)
+        X_num_test = X_num_test.to(device)
+        stock_test = stock_test.to(device)
+        row_idx = row_idx.to(device)
 
-        h_att = lstm.forward_for_ht(X_test, stock_test)
-        h_row_idxs.append(row_idx.cpu())
-        h_ts.append(h_att.cpu())
+        h_att = lstm(X_text_test, stock_test)
 
-h_idx_tensor = torch.cat(h_row_idxs, dim=0).numpy()
-h_ts_tensor = torch.cat(h_ts, dim=0).numpy() # shape: (num_rows, hidden_dim)
+        # GNN layer here
+        head = nn.Linear(h_att.shape[1], 1).to(device)
+        logits = head(h_att).squeeze(-1)
 
-lf_h_att = pl.LazyFrame({
-    "row_index": h_idx_tensor,
-    "lstm_embed": list(h_ts_tensor) # store each row as a list
-})
+        for idx in row_idx.cpu():
+            if idx != -1:
+                all_row_idxs.append(row_idx.cpu())
+                all_preds.append(logits.cpu())
 
-lf_joined = l.lf.join(lf_h_att, on="row_index", how="inner")
+all_row_idxs = []
+all_preds = []
 
+with torch.no_grad():
+    for X_text_test, X_num_test, Y_test, stock_test, row_idx in test_loader:
+        X_text_test = X_text_test.to(device)
+        X_num_test = X_num_test.to(device)
+        stock_test = stock_test.to(device)
 
-start_date = lf_joined.select(pl.min("Date")).collect().item().date()
-end_date = lf_joined.select(pl.max("Date")).collect().item().date()
+        h_att = lstm(X_text_test, stock_test)
 
-print("Writing to .parquet")
-parquet_path = f"lstm_embed_test_{start_date}_{end_date}.parquet"
-lf_joined.sink_parquet(parquet_path)
-print(f"Saved to {parquet_path}")
+        head = nn.Linear(h_att.shape[1], 1).to(device)
+        logits = head(h_att).squeeze(-1)
 
-print("Loading witten file")
-lf_loaded = pl.scan_parquet(parquet_path)
-print(lf_loaded.sort("Date").collect())
+        for idx, pred in zip(row_idx.cpu(), logits.cpu()):
+            if idx != -1:
+                all_row_idxs.append(idx)
+                all_preds.append(pred)
+
+if all_row_idxs and all_preds:
+    all_row_idxs = torch.tensor(all_row_idxs).numpy()
+    all_preds = torch.tensor(all_preds).numpy()
+
+    preds = pl.LazyFrame({
+        "row_index": all_row_idxs,
+        "prediction": all_preds
+    })
+
+    lf_joined = l.lf.join(preds, on="row_index", how="inner")

@@ -208,15 +208,10 @@ class LSTM_Encoder(nn.Module):
         self.embedding.weight.data.copy_(torch.tensor(embedding_matrix)) # Copy the Word2Vec embeddings
         self.stock_embedding = nn.Embedding(num_stocks, stock_emb_dim, device=self.device) # Learn the stock_emb from the data itself
 
-        # hidden_dim = dim of h_t
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True, device=self.device)
 
         self.att = Attentive_Pooling(hidden_dim, device=self.device)
 
-        # Fully connected Layer from hidden_dim that will give the 'probs' for each possible next word
-        self.fc = nn.Linear(hidden_dim, vocab_size, device=self.device)
-
-    # TODO: Remove this one/change it for in the whole model pipeline
     def forward(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
         # x.shape = (batch_size, seq_len)
         # x_emb.shape = (batch_size, seq_len, embed_dim)
@@ -228,28 +223,9 @@ class LSTM_Encoder(nn.Module):
 
         out, (h_out, c_out) = self.lstm(x_embedding, (h_in, mem_in))
         # out.shape: (batch_size, seq_len, hidden_dim)
-        # h_out.shape: (batch_size, 1, hidden_dim)
-
-        # Apply attention mechanism
-        stock_emb = self.stock_embedding(stock_ids) # (batch_size, stock_dim)
-        mask = (x != 0) # Mask to give no weight to the pad tokens in the attention
-        h_att = self.att(out, query=stock_emb, mask=mask)
-
-        logits = self.fc(h_att)
-
-        return logits # shape: (batch_size, vocab_size)
-    
-    def forward_for_ht(self, x: torch.Tensor, stock_ids, h_in=None, mem_in=None):
-        x_embedding = self.embedding(x) # lookup the embedding
-        if h_in is None or mem_in is None:
-            h_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim, device=self.device)
-            mem_in = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim, device=self.device)
-
-        out, (h_out, c_out) = self.lstm(x_embedding, (h_in, mem_in))
 
         # Apply attention mechanism
         stock_emb = self.stock_embedding(stock_ids) # (batch_size, stock_dim)
         mask = (x != 0) # Mask to give no weight to the pad tokens in the attention
         h_att = self.att(out, query=stock_emb, mask=mask)
         return h_att
-
