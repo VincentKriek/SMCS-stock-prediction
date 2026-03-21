@@ -6,18 +6,21 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 import torch.optim as optim
 import numpy as np
-from gensim.models import Word2Vec
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-import nltk
-import string
 import tqdm
 from datetime import datetime
 
 # start = datetime(2018, 1, 1)
 # end = datetime(2018, 2, 1)
 # l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", start_date=start, end_date=end)
-l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=1_000)
+# l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=1_000)
+l = LazyHeadlineVectorizer("../prepared_data_2018-01-01_2023-12-31.parquet", n_rows=10)
+
+l.load_headlines()
+
+print(l.lf.collect().schema) # TODO: is Article_tile a List[str]? or only a str?
+l.lf = l.lf.drop("Sentiment_llm_mean_filled", "Sentiment_llm_median_filled", "Sentiment_llm_mode_filled")
+print(l.lf.sort("Date").collect()) # TODO: is Article_tile a List[str]? or only a str?
+
 
 l.run()
 
@@ -65,8 +68,8 @@ stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 id2stock = {idx: symbol for idx, symbol in enumerate(stocks)}
 
 # Collect embedded headlines from LazyFrame
-data = l.lf.select("row_index", "embedded_headline", "Stock_symbol", "Date")
-data = data.sort("Date")
+# data = l.lf.select("row_index", "embedded_headline", "Stock_symbol", "Date")
+data = l.lf.sort("Date")
 
 def train_val_test_split_ratio(
     data: pl.LazyFrame,
@@ -178,9 +181,7 @@ for epoch in range(max_epochs):
         optimizer.step()
         train_loss  += loss.item()
         progress_bar.set_postfix(loss=loss.item())
-        break
-    
-    break
+
     # Validation
     lstm.eval()
     val_loss = 0
@@ -234,8 +235,6 @@ lf_h_att = pl.LazyFrame({
 
 lf_joined = l.lf.join(lf_h_att, on="row_index", how="inner")
 
-# print("="*60)
-# print(lf_joined.sort("Date").collect())
 
 start_date = lf_joined.select(pl.min("Date")).collect().item().date()
 end_date = lf_joined.select(pl.max("Date")).collect().item().date()

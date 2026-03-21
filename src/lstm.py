@@ -59,6 +59,17 @@ class LazyHeadlineVectorizer:
 
     # Tokenizer for a single headline
     def clean_tokenize(self, headline):
+        if isinstance(headline, pl.Series):
+            token_list = []
+            for h in headline:
+                tokens = word_tokenize(h.lower())
+                tokens = [t for t in tokens if t not in self.stop_words
+                        and t not in self.punctuation
+                        and not t.isnumeric()]
+                token_list.extend(tokens) # concatenate the headlines tokens
+            return token_list
+    
+        # headline is string
         tokens = word_tokenize(headline.lower())
         tokens = [t for t in tokens if t not in self.stop_words
                   and t not in self.punctuation
@@ -90,7 +101,10 @@ class LazyHeadlineVectorizer:
 
         def __iter__(self):
             for row in self.lf.select("tokenized_headline").collect(engine="streaming").iter_rows():
-                yield row[0]
+                h = row[0]
+                if h is None: # skip null values
+                    continue
+                yield h
 
     # Train Word2Vec lazily
     def train_word2vec(self):
