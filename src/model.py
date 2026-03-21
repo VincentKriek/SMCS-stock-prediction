@@ -203,7 +203,7 @@ counter = 0
 # TODO: Steps:
 # 1. Models: (Baselines: Only XGBoost/MGNN, addition: LSTM/LLM)
 # 2. Make a good, train-test split
-# 3. Make the training loop
+# 3. Update the training loop (add model layers, make compatible with diff #features)
 
 print("Training-Val")
 max_epochs = 100
