@@ -13,7 +13,7 @@ from datetime import datetime
 # end = datetime(2018, 2, 1)
 # l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", start_date=start, end_date=end)
 # l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=1_000)
-l = LazyHeadlineVectorizer("../prepared_data_2018-01-01_2023-12-31.parquet", n_rows=10)
+l = LazyHeadlineVectorizer("../prepared_data_2018-01-01_2023-12-31.parquet", n_rows=20)
 
 # l.load_headlines()
 
@@ -61,7 +61,7 @@ def build_dataset(
     embedding_col: str|None, # e.g. "embedded_headlines"
     feature_cols: list[str],
     target_col: str, # e.g. close price
-    max_headline_len: int = None
+    max_headline_len: int
 ):
     X_text_list, X_num_list, Y_list, stock_ids_list, row_idx_list = [], [], [], [], []
 
@@ -121,8 +121,9 @@ for t in dataset.tensors:
 def train_val_test_split_ratio(
     data: pl.LazyFrame,
     batch_size: int,
+    max_headline_l: int,
     train_ratio=0.8,
-    val_ratio=0.1
+    val_ratio=0.1,
 ):
     # Split into train and test
     split_date = data.select("Date").collect()[int(train_ratio * l.n_rows)].item()
@@ -135,18 +136,23 @@ def train_val_test_split_ratio(
     train_data_final = train_data_full[:split_idx]
     val_data = train_data_full[split_idx:]
 
-    train_loader = DataLoader(build_dataset(train_data_final, stock2id), batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(build_dataset(val_data, stock2id), batch_size=batch_size, shuffle=False)
+    e_col = "embedded_headline"
+    f_cols = ["open", "high"]
+    t_col = "close"
+
+    train_loader = DataLoader(build_dataset(train_data_final, stock2id, e_col, f_cols, t_col, max_headline_l), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(build_dataset(val_data, stock2id, e_col, f_cols, t_col, max_headline_l), batch_size=batch_size, shuffle=False)
 
     # Testing
     test_data_dicts = test_data.collect(engine="streaming").to_dicts()
-    test_loader = DataLoader(build_dataset(test_data_dicts, stock2id), batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(build_dataset(test_data_dicts, stock2id, e_col, f_cols, t_col, max_headline_l), batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader
 
 def train_val_test_split_date(
     data: pl.LazyFrame,
     batch_size: int,
+    max_headline_l: int,
     train_start_date: datetime,
     train_end_date: datetime,
     test_start_date: datetime,
@@ -163,18 +169,22 @@ def train_val_test_split_date(
     train_data_final = train_data_full[:split_idx]
     val_data = train_data_full[split_idx:]
 
-    train_loader = DataLoader(build_dataset(train_data_final, stock2id), batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(build_dataset(val_data, stock2id), batch_size=batch_size, shuffle=False)
+    e_col = "embedded_headline"
+    f_cols = ["open", "high"]
+    t_col = "close"
+
+    train_loader = DataLoader(build_dataset(train_data_final, stock2id, e_col, f_cols, t_col, max_headline_l), batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(build_dataset(val_data, stock2id, e_col, f_cols, t_col, max_headline_l), batch_size=batch_size, shuffle=False)
 
     # Testing
     test_data_dicts = test_data.collect(engine="streaming").to_dicts()
-    test_loader = DataLoader(build_dataset(test_data_dicts, stock2id), batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(build_dataset(test_data_dicts, stock2id, e_col, f_cols, t_col, max_headline_l), batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader
 
 # Split into train and test
 batch_size = 16
-train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, train_ratio=0.8, val_ratio=0.1)
+train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, max_headline_l=l.max_headline_len, train_ratio=0.8, val_ratio=0.1)
 
 # start_train = datetime(2018, 1, 1)
 # end_train = datetime(2018, 1, 15)
