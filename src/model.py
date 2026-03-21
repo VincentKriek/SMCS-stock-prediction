@@ -1,4 +1,4 @@
-from lstm import LazyHeadlineVectorizer, LSTM_Encoder, Attentive_Pooling
+from lstm import LazyHeadlineVectorizer, LSTM_Encoder
 import polars as pl
 import torch
 import torch.nn as nn
@@ -15,18 +15,20 @@ from datetime import datetime
 # l = LazyHeadlineVectorizer("../news_formatted_2018-01-01_2023-12-31.parquet", n_rows=1_000)
 l = LazyHeadlineVectorizer("../prepared_data_2018-01-01_2023-12-31.parquet", n_rows=10)
 
-l.load_headlines()
+# l.load_headlines()
 
-print(l.lf.collect().schema) # TODO: is Article_tile a List[str]? or only a str?
-l.lf = l.lf.drop("Sentiment_llm_mean_filled", "Sentiment_llm_median_filled", "Sentiment_llm_mode_filled")
-print(l.lf.sort("Date").collect()) # TODO: is Article_tile a List[str]? or only a str?
-
+# print(l.lf.collect().schema) # TODO: is Article_tile a List[str]? or only a str?
+# print(l.lf.sort("Date").collect()) # TODO: is Article_tile a List[str]? or only a str?
 
 l.run()
+l.lf = l.lf.drop("Sentiment_llm_mean_filled", "Sentiment_llm_median_filled", "Sentiment_llm_mode_filled")
+
+print("\n===== Schema after vectorizing headlines =====:")
+print(l.lf.collect().schema) # TODO: is Article_tile a List[str]? or only a str?
+print()
 
 num_stocks = l.lf.select(pl.col("Stock_symbol").n_unique()).collect().item()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 lstm = LSTM_Encoder(
     vocab_size=len(l.word2id),
     embedding_dim=l.vector_size,
@@ -38,24 +40,10 @@ lstm = LSTM_Encoder(
     device=device
 )
 
+print(f"Max headline len: {l.max_headline_len}")
+# print(l.lf.sort("Date").drop("summary", "high", "low", "volume", "adj close", "headline_len", "tokenized_headline").collect())
+
 # region Training
-
-def build_dataset(data, stock2id: dict[str, int]):
-    X_list, Y_list, stock_ids_list, row_idx_list = [], [], [], []
-
-    for row in data:
-        seq = row["embedded_headline"]
-        X_list.append(seq[:-1]) # all words except last
-        Y_list.append(seq[1:]) # next word as target (a 'shift' by one per word)
-        stock_ids_list.append(row["Stock_symbol"])
-        row_idx_list.append(row["row_index"]) # store original row idx
-
-    X = torch.tensor(X_list, dtype=torch.long)
-    Y = torch.tensor(Y_list, dtype=torch.long)
-    stock_ids = torch.tensor([stock2id[s] for s in stock_ids_list], dtype=torch.long)
-    row_idx_tensor = torch.tensor(row_idx_list, dtype=torch.long)
-
-    return TensorDataset(X, Y, stock_ids, row_idx_tensor)
 
 # Map stock symbols (string) to ints:
 print("="*40)
@@ -67,9 +55,68 @@ stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_li
 stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 id2stock = {idx: symbol for idx, symbol in enumerate(stocks)}
 
-# Collect embedded headlines from LazyFrame
-# data = l.lf.select("row_index", "embedded_headline", "Stock_symbol", "Date")
+def build_dataset(
+    data,
+    stock2id: dict[str, int],
+    embedding_col: str|None, # e.g. "embedded_headlines"
+    feature_cols: list[str],
+    target_col: str, # e.g. close price
+    max_headline_len: int = None
+):
+    X_text_list, X_num_list, Y_list, stock_ids_list, row_idx_list = [], [], [], [], []
+
+    for row in data:
+        embedding_headline = []
+        val = row.get(embedding_col)
+        if val is None:
+            val = [0] * max_headline_len # zero vector if there is no news that day
+        embedding_headline.extend(val)
+
+        numeric_feats = []
+        for col in feature_cols:
+            val = row.get(col)
+            # Handle missing values
+            if val is None:
+                val = -1
+            numeric_feats.append(val)
+
+        target = row.get(target_col)
+        if target is None:
+            continue # skip if no label
+
+        X_text_list.append(embedding_headline)
+        X_num_list.append(numeric_feats)
+        Y_list.append(target)
+        stock_ids_list.append(stock2id[row["Stock_symbol"]])
+        row_idx = row["row_index"][0] if row["row_index"] is not None else -1 # TODO: valid? use [0], as we've concatenated the headlines of these rows already?
+        row_idx_list.append(row_idx)
+
+    X_text = torch.tensor(X_text_list, dtype=torch.float32) # shape: (#rows, #max_headline_len)
+    X_num = torch.tensor(X_num_list, dtype=torch.float32) # shape: (#rows, #features)
+    print(X_text.shape)
+    print(X_num.shape)
+    Y = torch.tensor(Y_list, dtype=torch.float32) # shape: (#rows,)
+    stock_ids = torch.tensor(stock_ids_list, dtype=torch.long)
+    row_idx_tensor = torch.tensor(row_idx_list, dtype=torch.long)
+
+    return TensorDataset(X_text, X_num, Y, stock_ids, row_idx_tensor)
+
 data = l.lf.sort("Date")
+
+feature_cols = ["open", "high"]
+
+dataset = build_dataset(
+    data=data.collect(engine="streaming").to_dicts(),
+    stock2id=stock2id,
+    embedding_col="embedded_headline",
+    feature_cols=feature_cols,
+    target_col="close",
+    max_headline_len=l.max_headline_len
+)
+
+print("\nDataset:")
+for t in dataset.tensors:
+    print(t)
 
 def train_val_test_split_ratio(
     data: pl.LazyFrame,
@@ -125,7 +172,6 @@ def train_val_test_split_date(
 
     return train_loader, val_loader, test_loader
 
-
 # Split into train and test
 batch_size = 16
 train_loader, val_loader, test_loader = train_val_test_split_ratio(data, batch_size, train_ratio=0.8, val_ratio=0.1)
@@ -148,7 +194,6 @@ counter = 0
 # 1. Models: (Baselines: Only XGBoost/MGNN, addition: LSTM/LLM)
 # 2. Make a good, train-test split
 # 3. Make the training loop
-
 
 print("Training-Val")
 max_epochs = 100
