@@ -10,7 +10,7 @@ import torch.optim as optim
 import tqdm
 from torch.utils.data import Dataset, DataLoader
 
-from lstm import LazyHeadlineVectorizer, LSTM_Encoder
+from src.lstm import LazyHeadlineVectorizer, LSTM_Encoder
 from Mdgnn import MDGNN
 from graph_snapshot import build_quarter_snapshots, expand_quarter_snapshots_to_daily
 
@@ -108,7 +108,7 @@ def to_timestamp(x):
 
 # Load + vectorize text data
 
-l = LazyHeadlineVectorizer("../prepared_data_2018-01-01_2023-12-31.parquet", n_rows=10)
+l = LazyHeadlineVectorizer("prepared_data_2018-01-01_2023-12-31.parquet", n_rows=10)
 l.run()
 
 if "Sentiment_llm_mean_filled" in l.lf.collect_schema().names():
@@ -119,6 +119,7 @@ print(l.lf.collect().schema)
 print()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 print(f"Max headline len: {l.max_headline_len}")
 print("=" * 40)
@@ -187,11 +188,19 @@ daily_stock_embeddings: Dict[pd.Timestamp, Dict[str, torch.Tensor]] = {}
 mdgnn.eval()
 with torch.no_grad():
     for dt, snapshot in tqdm.tqdm(daily_snapshots.items(), desc="Precomputing graph embeddings"):
+        stock_feat = snapshot["stock_feat"].to(device)
+        bank_feat = snapshot["bank_feat"].to(device)
+        edges = {
+            k: (e[0].to(device), e[1].to(device) if e[1] is not None else None)
+            if e is not None else None
+            for k, e in snapshot["edges"].items()
+        }
+
         stock_repr = mdgnn.encode_snapshot(
-            stock_feat=snapshot["stock_feat"].to(device),
-            bank_feat=snapshot["bank_feat"].to(device),
+            stock_feat=stock_feat,
+            bank_feat=bank_feat,
             industry_feat=None,
-            edges=snapshot["edges"]
+            edges=edges
         )  # [Ns, D]
 
         stock_ids_snapshot = snapshot["stock_ids"]
@@ -352,13 +361,13 @@ test_dataset = RollingWindowDataset(
     target_col="close"
 )
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
 print(f"Train samples: {len(train_dataset)}")
 print(f"Val samples:   {len(val_dataset)}")
 print(f"Test samples:  {len(test_dataset)}")
+
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
 
 # Build fusion model
