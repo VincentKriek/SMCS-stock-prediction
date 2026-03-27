@@ -8,11 +8,6 @@ import torch.nn.functional as F
 
 
 def masked_segment_softmax(scores: torch.Tensor, index: torch.Tensor, num_segments: int):
-    """
-    Softmax over variable-size segments.
-    scores: [E]
-    index:  [E] target node indices
-    """
     out = torch.zeros_like(scores)
     for i in range(num_segments):
         mask = (index == i)
@@ -24,23 +19,36 @@ def masked_segment_softmax(scores: torch.Tensor, index: torch.Tensor, num_segmen
 
 # Relation-specific graph attention
 class RelationGraphAttention(nn.Module):
-    def __init__(self, hidden_dim: int, edge_dim: int = 0, dropout: float = 0.1):
+    def __init__(
+        self,
+        hidden_dim: int,
+        edge_dim: int = 0,
+        num_heads: int = 4,
+        dropout: float = 0.1
+    ):
         super().__init__()
+        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
+
         self.hidden_dim = hidden_dim
         self.edge_dim = edge_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
 
         self.src_proj = nn.Linear(hidden_dim, hidden_dim)
         self.dst_proj = nn.Linear(hidden_dim, hidden_dim)
 
         if edge_dim > 0:
             self.edge_proj = nn.Linear(edge_dim, hidden_dim)
-            attn_in_dim = hidden_dim * 3
+            attn_in_dim = self.head_dim * 3
         else:
             self.edge_proj = None
-            attn_in_dim = hidden_dim * 2
+            attn_in_dim = self.head_dim * 2
+
 
         self.attn_fc = nn.Linear(attn_in_dim, 1)
-        self.msg_fc = nn.Linear(hidden_dim, hidden_dim)
+        self.msg_fc = nn.Linear(self.head_dim, self.head_dim)
+
+        self.merge_fc = nn.Linear(self.head_dim, hidden_dim)
         self.out_fc = nn.Linear(hidden_dim * 2, hidden_dim)
 
         self.dropout = nn.Dropout(dropout)
@@ -57,25 +65,46 @@ class RelationGraphAttention(nn.Module):
         src_idx = edge_index[0]
         dst_idx = edge_index[1]
         num_dst = dst_x.size(0)
+        num_edges = src_idx.size(0)
 
-        src_feat = self.src_proj(src_x[src_idx])     # [E, D]
-        dst_feat = self.dst_proj(dst_x[dst_idx])     # [E, D]
+        if num_edges == 0:
+            return dst_x
+
+
+        src_feat = self.src_proj(src_x[src_idx]).view(num_edges, self.num_heads, self.head_dim)
+        dst_feat = self.dst_proj(dst_x[dst_idx]).view(num_edges, self.num_heads, self.head_dim)
 
         if self.edge_proj is not None and edge_attr is not None:
-            e_feat = self.edge_proj(edge_attr)       # [E, D]
-            attn_in = torch.cat([src_feat, dst_feat, e_feat], dim=-1)
-            msg = self.msg_fc(src_feat + e_feat)
+            e_feat = self.edge_proj(edge_attr).view(num_edges, self.num_heads, self.head_dim)
+            attn_in = torch.cat([src_feat, dst_feat, e_feat], dim=-1) 
+            msg = self.msg_fc(src_feat + e_feat)                       
         else:
-            attn_in = torch.cat([src_feat, dst_feat], dim=-1)
-            msg = self.msg_fc(src_feat)
+            attn_in = torch.cat([src_feat, dst_feat], dim=-1)        
+            msg = self.msg_fc(src_feat)                               
 
-        attn_scores = self.attn_fc(torch.tanh(attn_in)).squeeze(-1)  # [E]
-        alpha = masked_segment_softmax(attn_scores, dst_idx, num_dst)  # [E]
 
-        weighted_msg = msg * alpha.unsqueeze(-1)  # [E, D]
+        attn_scores = self.attn_fc(torch.tanh(attn_in)).squeeze(-1)
 
-        agg = torch.zeros(num_dst, self.hidden_dim, device=device)
-        agg.index_add_(0, dst_idx, weighted_msg)
+
+        alpha_heads = []
+        for h in range(self.num_heads):
+            alpha_h = masked_segment_softmax(attn_scores[:, h], dst_idx, num_dst)  
+            alpha_heads.append(alpha_h)
+        alpha = torch.stack(alpha_heads, dim=1)
+
+
+        weighted_msg = msg * alpha.unsqueeze(-1)  
+
+
+        agg = torch.zeros(num_dst, self.num_heads, self.head_dim, device=device)
+        for h in range(self.num_heads):
+            agg[:, h, :].index_add_(0, dst_idx, weighted_msg[:, h, :])
+
+
+        agg = agg.mean(dim=1)
+
+
+        agg = self.merge_fc(agg)  
 
         updated = self.out_fc(torch.cat([dst_x, agg], dim=-1))
         updated = self.dropout(updated)
@@ -127,6 +156,7 @@ class IntraDaySnapshotEncoder(nn.Module):
         edge_dims: Dict[str, int],
         hidden_dim: int = 128,
         num_layers: int = 2,
+        num_heads: int = 4,
         dropout: float = 0.1
     ):
         super().__init__()
@@ -155,72 +185,46 @@ class IntraDaySnapshotEncoder(nn.Module):
         self.layers = nn.ModuleList()
         for _ in range(num_layers):
             layer = nn.ModuleDict({
-                "SS": RelationGraphAttention(hidden_dim, edge_dims.get("SS", 0), dropout),
-                "SB": RelationGraphAttention(hidden_dim, edge_dims.get("SB", 0), dropout),
-                "BS": RelationGraphAttention(hidden_dim, edge_dims.get("BS", edge_dims.get("SB", 0)), dropout),
-                "SI": RelationGraphAttention(hidden_dim, edge_dims.get("SI", 0), dropout),
-                "IS": RelationGraphAttention(hidden_dim, edge_dims.get("IS", edge_dims.get("SI", 0)), dropout),
-                "II": RelationGraphAttention(hidden_dim, edge_dims.get("II", 0), dropout),
+                "SS": RelationGraphAttention(
+                    hidden_dim=hidden_dim,
+                    edge_dim=edge_dims.get("SS", 0),
+                    num_heads=num_heads,
+                    dropout=dropout
+                ),
+                "SB": RelationGraphAttention(
+                    hidden_dim=hidden_dim,
+                    edge_dim=edge_dims.get("SB", 0),
+                    num_heads=num_heads,
+                    dropout=dropout
+                ),
+                "BS": RelationGraphAttention(
+                    hidden_dim=hidden_dim,
+                    edge_dim=edge_dims.get("BS", edge_dims.get("SB", 0)),
+                    num_heads=num_heads,
+                    dropout=dropout
+                ),
+                "SI": RelationGraphAttention(
+                    hidden_dim=hidden_dim,
+                    edge_dim=edge_dims.get("SI", 0),
+                    num_heads=num_heads,
+                    dropout=dropout
+                ),
+                "IS": RelationGraphAttention(
+                    hidden_dim=hidden_dim,
+                    edge_dim=edge_dims.get("IS", edge_dims.get("SI", 0)),
+                    num_heads=num_heads,
+                    dropout=dropout
+                ),
+                "II": RelationGraphAttention(
+                    hidden_dim=hidden_dim,
+                    edge_dim=edge_dims.get("II", 0),
+                    num_heads=num_heads,
+                    dropout=dropout
+                ),
             })
             self.layers.append(layer)
 
-        # aggregate stock views from distinct relations/meta-paths
         self.meta_agg = MetaPathAggregator(hidden_dim, num_paths=3, dropout=dropout)
-
-    def forward(
-        self,
-        stock_feat: torch.Tensor,
-        bank_feat: Optional[torch.Tensor],
-        industry_feat: Optional[torch.Tensor],
-        edges: Dict[str, Optional[Tuple[torch.Tensor, Optional[torch.Tensor]]]]
-    ) -> torch.Tensor:
-        stock_x = self.stock_encoder(stock_feat)
-
-        if bank_feat is not None and bank_feat.numel() > 0:
-            bank_x = self.bank_encoder(bank_feat)
-        else:
-            bank_x = None
-
-        if industry_feat is not None and industry_feat.numel() > 0:
-            industry_x = self.industry_encoder(industry_feat)
-        else:
-            industry_x = None
-
-        for layer in self.layers:
-            # relation-specific updates
-            h_ss = stock_x
-            h_sb = stock_x
-            h_si = stock_x
-
-            if edges.get("SS") is not None:
-                ei, ea = edges["SS"]
-                h_ss = layer["SS"](stock_x, stock_x, ei, ea)
-
-            if bank_x is not None and edges.get("SB") is not None:
-                ei, ea = edges["SB"]
-                h_sb = layer["SB"](bank_x, stock_x, ei, ea)
-
-            if industry_x is not None and edges.get("SI") is not None:
-                ei, ea = edges["SI"]
-                h_si = layer["SI"](industry_x, stock_x, ei, ea)
-
-            # meta-path aggregation over stock representations
-            stock_x = self.meta_agg([h_ss, h_sb, h_si])
-
-            # optionally update bank / industry 
-            if bank_x is not None and edges.get("BS") is not None:
-                ei, ea = edges["BS"]
-                bank_x = layer["BS"](stock_x, bank_x, ei, ea)
-
-            if industry_x is not None and edges.get("IS") is not None:
-                ei, ea = edges["IS"]
-                industry_x = layer["IS"](stock_x, industry_x, ei, ea)
-
-            if industry_x is not None and edges.get("II") is not None:
-                ei, ea = edges["II"]
-                industry_x = layer["II"](industry_x, industry_x, ei, ea)
-
-        return stock_x   # [Ns, D]
 
 
 # Inter-day temporal extraction layer
@@ -343,6 +347,7 @@ class MDGNN(nn.Module):
             edge_dims=edge_dims,
             hidden_dim=hidden_dim,
             num_layers=gnn_layers,
+            num_heads=num_heads,
             dropout=dropout
         )
 
