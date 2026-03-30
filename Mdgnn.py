@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-
 def masked_segment_softmax(scores: torch.Tensor, index: torch.Tensor, num_segments: int):
     out = torch.zeros_like(scores)
     for i in range(num_segments):
@@ -16,9 +15,9 @@ def masked_segment_softmax(scores: torch.Tensor, index: torch.Tensor, num_segmen
     return out
 
 
-
-# Relation-specific graph attention
 class RelationGraphAttention(nn.Module):
+    
+    #Relation-specific graph attention layer, supports multi-head attention and mean pooling over heads.
     def __init__(
         self,
         hidden_dim: int,
@@ -43,7 +42,6 @@ class RelationGraphAttention(nn.Module):
         else:
             self.edge_proj = None
             attn_in_dim = self.head_dim * 2
-
 
         self.attn_fc = nn.Linear(attn_in_dim, 1)
         self.msg_fc = nn.Linear(self.head_dim, self.head_dim)
@@ -70,41 +68,35 @@ class RelationGraphAttention(nn.Module):
         if num_edges == 0:
             return dst_x
 
-
         src_feat = self.src_proj(src_x[src_idx]).view(num_edges, self.num_heads, self.head_dim)
         dst_feat = self.dst_proj(dst_x[dst_idx]).view(num_edges, self.num_heads, self.head_dim)
 
         if self.edge_proj is not None and edge_attr is not None:
             e_feat = self.edge_proj(edge_attr).view(num_edges, self.num_heads, self.head_dim)
-            attn_in = torch.cat([src_feat, dst_feat, e_feat], dim=-1) 
-            msg = self.msg_fc(src_feat + e_feat)                       
+            attn_in = torch.cat([src_feat, dst_feat, e_feat], dim=-1)
+            msg = self.msg_fc(src_feat + e_feat)
         else:
-            attn_in = torch.cat([src_feat, dst_feat], dim=-1)        
-            msg = self.msg_fc(src_feat)                               
+            attn_in = torch.cat([src_feat, dst_feat], dim=-1)
+            msg = self.msg_fc(src_feat)
 
-
-        attn_scores = self.attn_fc(torch.tanh(attn_in)).squeeze(-1)
-
+        attn_scores = self.attn_fc(torch.tanh(attn_in)).squeeze(-1)  # [E, H]
 
         alpha_heads = []
         for h in range(self.num_heads):
-            alpha_h = masked_segment_softmax(attn_scores[:, h], dst_idx, num_dst)  
+            alpha_h = masked_segment_softmax(attn_scores[:, h], dst_idx, num_dst)
             alpha_heads.append(alpha_h)
-        alpha = torch.stack(alpha_heads, dim=1)
+        alpha = torch.stack(alpha_heads, dim=1)  # [E, H]
 
-
-        weighted_msg = msg * alpha.unsqueeze(-1)  
-
+        weighted_msg = msg * alpha.unsqueeze(-1)  # [E, H, Dh]
 
         agg = torch.zeros(num_dst, self.num_heads, self.head_dim, device=device)
         for h in range(self.num_heads):
             agg[:, h, :].index_add_(0, dst_idx, weighted_msg[:, h, :])
 
+        # average pooling over heads
+        agg = agg.mean(dim=1)  # [N_dst, Dh]
 
-        agg = agg.mean(dim=1)
-
-
-        agg = self.merge_fc(agg)  
+        agg = self.merge_fc(agg)  # [N_dst, D]
 
         updated = self.out_fc(torch.cat([dst_x, agg], dim=-1))
         updated = self.dropout(updated)
@@ -113,8 +105,9 @@ class RelationGraphAttention(nn.Module):
         return updated
 
 
-# Meta-path aggregation
 class MetaPathAggregator(nn.Module):
+    
+    # Aggregate multiple path-based node representations.
     def __init__(self, hidden_dim: int, num_paths: int, dropout: float = 0.1):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -128,15 +121,12 @@ class MetaPathAggregator(nn.Module):
         self.norm = nn.LayerNorm(hidden_dim)
 
     def forward(self, path_reprs: List[torch.Tensor]) -> torch.Tensor:
-        """
-        path_reprs: list of [N, D]
-        """
         assert len(path_reprs) > 0, "path_reprs must not be empty"
-        stacked = torch.stack(path_reprs, dim=1)  # [N, P, D]
 
-        h = torch.tanh(self.path_fc(stacked))      # [N, P, D]
-        scores = self.score_fc(h).squeeze(-1)      # [N, P]
-        alpha = F.softmax(scores, dim=1)           # [N, P]
+        stacked = torch.stack(path_reprs, dim=1)     # [N, P, D]
+        h = torch.tanh(self.path_fc(stacked))        # [N, P, D]
+        scores = self.score_fc(h).squeeze(-1)        # [N, P]
+        alpha = F.softmax(scores, dim=1)             # [N, P]
 
         out = torch.sum(alpha.unsqueeze(-1) * stacked, dim=1)  # [N, D]
         out = self.out_fc(out)
@@ -146,8 +136,9 @@ class MetaPathAggregator(nn.Module):
         return out
 
 
-# Intra-day graph snapshot encoder
 class IntraDaySnapshotEncoder(nn.Module):
+
+    # Encode one graph snapshot and return stock embeddings.
     def __init__(
         self,
         stock_in_dim: int,
@@ -169,12 +160,15 @@ class IntraDaySnapshotEncoder(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim)
         )
+
         self.bank_encoder = nn.Sequential(
             nn.Linear(bank_in_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim)
         )
+
+        # Only used if industry features are provided
         self.industry_encoder = nn.Sequential(
             nn.Linear(industry_in_dim, hidden_dim),
             nn.ReLU(),
@@ -226,8 +220,65 @@ class IntraDaySnapshotEncoder(nn.Module):
 
         self.meta_agg = MetaPathAggregator(hidden_dim, num_paths=3, dropout=dropout)
 
+    def forward(
+        self,
+        stock_feat: torch.Tensor,
+        bank_feat: Optional[torch.Tensor],
+        industry_feat: Optional[torch.Tensor],
+        edges: Dict[str, Optional[Tuple[torch.Tensor, Optional[torch.Tensor]]]]
+    ) -> torch.Tensor:
+        
+        # Return stock node embeddings after message passing.
+        stock_h = self.stock_encoder(stock_feat)
 
-# Inter-day temporal extraction layer
+        bank_h = None
+        if bank_feat is not None:
+            bank_h = self.bank_encoder(bank_feat)
+
+        industry_h = None
+        if industry_feat is not None:
+            industry_h = self.industry_encoder(industry_feat)
+
+        for layer in self.layers:
+            stock_paths = [stock_h]
+
+            # SS: stock -> stock
+            if edges.get("SS") is not None:
+                edge_index_ss, edge_attr_ss = edges["SS"]
+                stock_from_stock = layer["SS"](stock_h, stock_h, edge_index_ss, edge_attr_ss)
+                stock_paths.append(stock_from_stock)
+
+            # SB: bank -> stock
+            if bank_h is not None and edges.get("SB") is not None:
+                edge_index_sb, edge_attr_sb = edges["SB"]
+                stock_from_bank = layer["SB"](bank_h, stock_h, edge_index_sb, edge_attr_sb)
+                stock_paths.append(stock_from_bank)
+
+            # SI: industry -> stock
+            if industry_h is not None and edges.get("SI") is not None:
+                edge_index_si, edge_attr_si = edges["SI"]
+                stock_from_industry = layer["SI"](industry_h, stock_h, edge_index_si, edge_attr_si)
+                stock_paths.append(stock_from_industry)
+
+            stock_h = self.meta_agg(stock_paths)
+
+            # Update bank nodes through BS: stock -> bank
+            if bank_h is not None and edges.get("BS") is not None:
+                edge_index_bs, edge_attr_bs = edges["BS"]
+                bank_h = layer["BS"](stock_h, bank_h, edge_index_bs, edge_attr_bs)
+
+            # Update industry nodes if provided
+            if industry_h is not None and edges.get("IS") is not None:
+                edge_index_is, edge_attr_is = edges["IS"]
+                industry_h = layer["IS"](stock_h, industry_h, edge_index_is, edge_attr_is)
+
+            if industry_h is not None and edges.get("II") is not None:
+                edge_index_ii, edge_attr_ii = edges["II"]
+                industry_h = layer["II"](industry_h, industry_h, edge_index_ii, edge_attr_ii)
+
+        return stock_h
+
+
 class ALiBiSelfAttention(nn.Module):
     def __init__(self, hidden_dim: int, num_heads: int = 4, dropout: float = 0.1, alibi_slope: float = 1.0):
         super().__init__()
@@ -301,8 +352,6 @@ class TemporalExtractionLayer(nn.Module):
         return x, final_repr, attn_weights
 
 
-
-# Prediction
 class PredictionHead(nn.Module):
     def __init__(self, hidden_dim=128, task="regression", dropout=0.1):
         super().__init__()
@@ -322,8 +371,8 @@ class PredictionHead(nn.Module):
         return logits
 
 
-# MDGNN: per-day graph snapshot -> stock embeddings -> temporal layer -> prediction
 class MDGNN(nn.Module):
+    # MDGNN:    graph snapshot encoder -> temporal layer -> prediction head
     def __init__(
         self,
         stock_in_dim: int,
@@ -380,3 +429,6 @@ class MDGNN(nn.Module):
         if return_attention:
             return pred, final_repr, attn
         return pred
+
+    def forward(self, x_seq: torch.Tensor, return_attention: bool = False):
+        return self.forward_from_sequence(x_seq, return_attention=return_attention)
