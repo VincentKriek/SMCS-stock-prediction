@@ -16,8 +16,6 @@ def masked_segment_softmax(scores: torch.Tensor, index: torch.Tensor, num_segmen
 
 
 class RelationGraphAttention(nn.Module):
-    
-    #Relation-specific graph attention layer, supports multi-head attention and mean pooling over heads.
     def __init__(
         self,
         hidden_dim: int,
@@ -93,10 +91,8 @@ class RelationGraphAttention(nn.Module):
         for h in range(self.num_heads):
             agg[:, h, :].index_add_(0, dst_idx, weighted_msg[:, h, :])
 
-        # average pooling over heads
-        agg = agg.mean(dim=1)  # [N_dst, Dh]
-
-        agg = self.merge_fc(agg)  # [N_dst, D]
+        agg = agg.mean(dim=1)  # average pooling over heads
+        agg = self.merge_fc(agg)
 
         updated = self.out_fc(torch.cat([dst_x, agg], dim=-1))
         updated = self.dropout(updated)
@@ -106,8 +102,6 @@ class RelationGraphAttention(nn.Module):
 
 
 class MetaPathAggregator(nn.Module):
-    
-    # Aggregate multiple path-based node representations.
     def __init__(self, hidden_dim: int, num_paths: int, dropout: float = 0.1):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -137,8 +131,6 @@ class MetaPathAggregator(nn.Module):
 
 
 class IntraDaySnapshotEncoder(nn.Module):
-
-    # Encode one graph snapshot and return stock embeddings.
     def __init__(
         self,
         stock_in_dim: int,
@@ -168,7 +160,6 @@ class IntraDaySnapshotEncoder(nn.Module):
             nn.Linear(hidden_dim, hidden_dim)
         )
 
-        # Only used if industry features are provided
         self.industry_encoder = nn.Sequential(
             nn.Linear(industry_in_dim, hidden_dim),
             nn.ReLU(),
@@ -179,42 +170,12 @@ class IntraDaySnapshotEncoder(nn.Module):
         self.layers = nn.ModuleList()
         for _ in range(num_layers):
             layer = nn.ModuleDict({
-                "SS": RelationGraphAttention(
-                    hidden_dim=hidden_dim,
-                    edge_dim=edge_dims.get("SS", 0),
-                    num_heads=num_heads,
-                    dropout=dropout
-                ),
-                "SB": RelationGraphAttention(
-                    hidden_dim=hidden_dim,
-                    edge_dim=edge_dims.get("SB", 0),
-                    num_heads=num_heads,
-                    dropout=dropout
-                ),
-                "BS": RelationGraphAttention(
-                    hidden_dim=hidden_dim,
-                    edge_dim=edge_dims.get("BS", edge_dims.get("SB", 0)),
-                    num_heads=num_heads,
-                    dropout=dropout
-                ),
-                "SI": RelationGraphAttention(
-                    hidden_dim=hidden_dim,
-                    edge_dim=edge_dims.get("SI", 0),
-                    num_heads=num_heads,
-                    dropout=dropout
-                ),
-                "IS": RelationGraphAttention(
-                    hidden_dim=hidden_dim,
-                    edge_dim=edge_dims.get("IS", edge_dims.get("SI", 0)),
-                    num_heads=num_heads,
-                    dropout=dropout
-                ),
-                "II": RelationGraphAttention(
-                    hidden_dim=hidden_dim,
-                    edge_dim=edge_dims.get("II", 0),
-                    num_heads=num_heads,
-                    dropout=dropout
-                ),
+                "SS": RelationGraphAttention(hidden_dim, edge_dims.get("SS", 0), num_heads, dropout),
+                "SB": RelationGraphAttention(hidden_dim, edge_dims.get("SB", 0), num_heads, dropout),
+                "BS": RelationGraphAttention(hidden_dim, edge_dims.get("BS", edge_dims.get("SB", 0)), num_heads, dropout),
+                "SI": RelationGraphAttention(hidden_dim, edge_dims.get("SI", 0), num_heads, dropout),
+                "IS": RelationGraphAttention(hidden_dim, edge_dims.get("IS", edge_dims.get("SI", 0)), num_heads, dropout),
+                "II": RelationGraphAttention(hidden_dim, edge_dims.get("II", 0), num_heads, dropout),
             })
             self.layers.append(layer)
 
@@ -227,34 +188,24 @@ class IntraDaySnapshotEncoder(nn.Module):
         industry_feat: Optional[torch.Tensor],
         edges: Dict[str, Optional[Tuple[torch.Tensor, Optional[torch.Tensor]]]]
     ) -> torch.Tensor:
-        
-        # Return stock node embeddings after message passing.
         stock_h = self.stock_encoder(stock_feat)
 
-        bank_h = None
-        if bank_feat is not None:
-            bank_h = self.bank_encoder(bank_feat)
-
-        industry_h = None
-        if industry_feat is not None:
-            industry_h = self.industry_encoder(industry_feat)
+        bank_h = self.bank_encoder(bank_feat) if bank_feat is not None else None
+        industry_h = self.industry_encoder(industry_feat) if industry_feat is not None else None
 
         for layer in self.layers:
             stock_paths = [stock_h]
 
-            # SS: stock -> stock
             if edges.get("SS") is not None:
                 edge_index_ss, edge_attr_ss = edges["SS"]
                 stock_from_stock = layer["SS"](stock_h, stock_h, edge_index_ss, edge_attr_ss)
                 stock_paths.append(stock_from_stock)
 
-            # SB: bank -> stock
             if bank_h is not None and edges.get("SB") is not None:
                 edge_index_sb, edge_attr_sb = edges["SB"]
                 stock_from_bank = layer["SB"](bank_h, stock_h, edge_index_sb, edge_attr_sb)
                 stock_paths.append(stock_from_bank)
 
-            # SI: industry -> stock
             if industry_h is not None and edges.get("SI") is not None:
                 edge_index_si, edge_attr_si = edges["SI"]
                 stock_from_industry = layer["SI"](industry_h, stock_h, edge_index_si, edge_attr_si)
@@ -262,12 +213,10 @@ class IntraDaySnapshotEncoder(nn.Module):
 
             stock_h = self.meta_agg(stock_paths)
 
-            # Update bank nodes through BS: stock -> bank
             if bank_h is not None and edges.get("BS") is not None:
                 edge_index_bs, edge_attr_bs = edges["BS"]
                 bank_h = layer["BS"](stock_h, bank_h, edge_index_bs, edge_attr_bs)
 
-            # Update industry nodes if provided
             if industry_h is not None and edges.get("IS") is not None:
                 edge_index_is, edge_attr_is = edges["IS"]
                 industry_h = layer["IS"](stock_h, industry_h, edge_index_is, edge_attr_is)
@@ -353,10 +302,8 @@ class TemporalExtractionLayer(nn.Module):
 
 
 class PredictionHead(nn.Module):
-    def __init__(self, hidden_dim=128, task="regression", dropout=0.1):
+    def __init__(self, hidden_dim=128, dropout=0.1):
         super().__init__()
-        assert task in ["regression", "classification"]
-        self.task = task
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -365,14 +312,11 @@ class PredictionHead(nn.Module):
         )
 
     def forward(self, x):
-        logits = self.mlp(x).squeeze(-1)
-        if self.task == "classification":
-            return torch.sigmoid(logits)
-        return logits
+        return self.mlp(x).squeeze(-1)
 
 
 class MDGNN(nn.Module):
-    # MDGNN:    graph snapshot encoder -> temporal layer -> prediction head
+    
     def __init__(
         self,
         stock_in_dim: int,
@@ -385,7 +329,6 @@ class MDGNN(nn.Module):
         ff_dim: int = 256,
         dropout: float = 0.1,
         alibi_slope: float = 1.0,
-        task: str = "regression"
     ):
         super().__init__()
 
@@ -408,9 +351,8 @@ class MDGNN(nn.Module):
             alibi_slope=alibi_slope
         )
 
-        self.pred_head = PredictionHead(
+        self.return_head = PredictionHead(
             hidden_dim=hidden_dim,
-            task=task,
             dropout=dropout
         )
 
@@ -425,10 +367,10 @@ class MDGNN(nn.Module):
 
     def forward_from_sequence(self, x_seq: torch.Tensor, return_attention: bool = False):
         _, final_repr, attn = self.temporal_layer(x_seq)
-        pred = self.pred_head(final_repr)
+        pred_return = self.return_head(final_repr)
         if return_attention:
-            return pred, final_repr, attn
-        return pred
+            return pred_return, final_repr, attn
+        return pred_return
 
     def forward(self, x_seq: torch.Tensor, return_attention: bool = False):
         return self.forward_from_sequence(x_seq, return_attention=return_attention)
