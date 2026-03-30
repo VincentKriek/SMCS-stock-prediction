@@ -11,6 +11,9 @@ import torch.optim as optim
 import tqdm
 
 
+# before run code, dont forget change path in line 375:
+# l = LazyHeadlineVectorizer("prepared_data_2018-01-01_2023-12-31.parquet", n_rows=1000)
+
 
 # Configuration
 HIDDEN_DIM = 128
@@ -369,10 +372,7 @@ def build_loaders_for_split(
 # Main
 if __name__ == "__main__":
     # 1. Load and vectorize prepared data
-    l = LazyHeadlineVectorizer(
-        "../prepared_data_2018-01-01_2023-12-31.parquet",
-        n_rows=1000
-    )
+    l = LazyHeadlineVectorizer("prepared_data_2018-01-01_2023-12-31.parquet", n_rows=1000)
     l.run()
 
     # Optional cleanup if these columns exist
