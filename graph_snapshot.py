@@ -14,7 +14,12 @@ def get_quarter_from_date(dt) -> str:
 
 
 # Build quarter-level graph snapshots
-def build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df):
+def build_quarter_snapshots(
+    nodes_bank_df,
+    nodes_stock_df,
+    edges_bank_stock_df,
+    edges_stock_stock_df=None
+):
     snapshots = {}
 
     quarter_pairs = sorted(set(zip(nodes_stock_df["year"], nodes_stock_df["quarter"])))
@@ -28,9 +33,16 @@ def build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df):
             (nodes_stock_df["year"] == year) & (nodes_stock_df["quarter"] == quarter)
         ].copy()
 
-        edge_df_q = edges_df[
-            (edges_df["year"] == year) & (edges_df["quarter"] == quarter)
+        edge_bs_df_q = edges_bank_stock_df[
+            (edges_bank_stock_df["year"] == year) & (edges_bank_stock_df["quarter"] == quarter)
         ].copy()
+
+        if edges_stock_stock_df is not None:
+            edge_ss_df_q = edges_stock_stock_df[
+                (edges_stock_stock_df["year"] == year) & (edges_stock_stock_df["quarter"] == quarter)
+            ].copy()
+        else:
+            edge_ss_df_q = None
 
         bank_ids = sorted(bank_df_q["bank_id"].astype(str).unique())
         stock_ids = sorted(stock_df_q["stock_id"].astype(str).unique())
@@ -38,9 +50,10 @@ def build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df):
         bank2idx = {x: i for i, x in enumerate(bank_ids)}
         stock2idx = {x: i for i, x in enumerate(stock_ids)}
 
-        edge_df_q = edge_df_q[
-            edge_df_q["bank_id"].astype(str).isin(bank2idx) &
-            edge_df_q["stock_id"].astype(str).isin(stock2idx)
+        # Keep only valid bank-stock edges
+        edge_bs_df_q = edge_bs_df_q[
+            edge_bs_df_q["bank_id"].astype(str).isin(bank2idx) &
+            edge_bs_df_q["stock_id"].astype(str).isin(stock2idx)
         ].copy()
 
         bank_feat_cols = [
@@ -55,7 +68,7 @@ def build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df):
             "total_institutional_shares",
             "num_quarters_held"
         ]
-        edge_feat_cols = [
+        edge_bs_feat_cols = [
             "total_value",
             "total_shares",
             "voting_sole",
@@ -67,6 +80,7 @@ def build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df):
             bank_df_q[bank_feat_cols].fillna(0.0).to_numpy(),
             dtype=torch.float32
         )
+
         stock_feat = torch.tensor(
             stock_df_q[stock_feat_cols].fillna(0.0).to_numpy(),
             dtype=torch.float32
@@ -75,20 +89,48 @@ def build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df):
         # SB: bank -> stock
         edge_index_sb = torch.tensor(
             np.vstack([
-                edge_df_q["bank_id"].astype(str).map(bank2idx).to_numpy(),
-                edge_df_q["stock_id"].astype(str).map(stock2idx).to_numpy()
+                edge_bs_df_q["bank_id"].astype(str).map(bank2idx).to_numpy(),
+                edge_bs_df_q["stock_id"].astype(str).map(stock2idx).to_numpy()
             ]),
             dtype=torch.long
         )
 
         edge_attr_sb = torch.tensor(
-            edge_df_q[edge_feat_cols].fillna(0.0).to_numpy(),
+            edge_bs_df_q[edge_bs_feat_cols].fillna(0.0).to_numpy(),
             dtype=torch.float32
         )
 
         # BS: stock -> bank (reverse edge)
         edge_index_bs = torch.stack([edge_index_sb[1], edge_index_sb[0]], dim=0)
         edge_attr_bs = edge_attr_sb.clone()
+
+        # SS: stock -> stock
+        edge_index_ss = None
+        edge_attr_ss = None
+
+        if edge_ss_df_q is not None and len(edge_ss_df_q) > 0:
+            edge_ss_df_q = edge_ss_df_q[
+                edge_ss_df_q["stock_id_1"].astype(str).isin(stock2idx) &
+                edge_ss_df_q["stock_id_2"].astype(str).isin(stock2idx)
+            ].copy()
+
+            if len(edge_ss_df_q) > 0:
+                edge_index_ss = torch.tensor(
+                    np.vstack([
+                        edge_ss_df_q["stock_id_1"].astype(str).map(stock2idx).to_numpy(),
+                        edge_ss_df_q["stock_id_2"].astype(str).map(stock2idx).to_numpy()
+                    ]),
+                    dtype=torch.long
+                )
+
+                # Use co-holder count as 1-dimensional edge feature
+                if "co_holder_count" in edge_ss_df_q.columns:
+                    edge_attr_ss = torch.tensor(
+                        edge_ss_df_q[["co_holder_count"]].fillna(0.0).to_numpy(),
+                        dtype=torch.float32
+                    )
+                else:
+                    edge_attr_ss = None
 
         snapshots[quarter_key(year, quarter)] = {
             "bank_ids": bank_ids,
@@ -99,7 +141,7 @@ def build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df):
             "bank_feat": bank_feat,
             "industry_feat": None,
             "edges": {
-                "SS": None,
+                "SS": (edge_index_ss, edge_attr_ss) if edge_index_ss is not None else None,
                 "SB": (edge_index_sb, edge_attr_sb),
                 "BS": (edge_index_bs, edge_attr_bs),
                 "SI": None,
