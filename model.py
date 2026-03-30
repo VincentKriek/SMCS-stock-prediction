@@ -1,483 +1,614 @@
-from typing import Dict, List
-
-import pandas as pd
-import polars as pl
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import tqdm
-from torch.utils.data import Dataset, DataLoader
-
 from lstm import LazyHeadlineVectorizer, LSTM_Encoder
 from Mdgnn import MDGNN
 from graph_snapshot import build_quarter_snapshots, expand_quarter_snapshots_to_daily
 
+import polars as pl
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+import torch.optim as optim
+import tqdm
 
-class LSTM_MDGNN_Fusion(nn.Module):
+
+
+# Configuration
+HIDDEN_DIM = 128
+GNN_LAYERS = 2
+WINDOW_SIZE = 10
+MAX_EPOCHS = 500
+PATIENCE = 20
+BATCH_SIZE = 8
+
+FEATURE_COLS = ["open", "high"]
+TARGET_COL = "close"
+
+ROLLING_START_DATE = "2020-01-01"
+ROLLING_END_DATE = "2023-02-28"
+
+TRAIN_MONTHS = 6
+VAL_MONTHS = 1
+TEST_MONTHS = 6
+
+
+
+# Graph cache
+class DailyGraphFeatureCache:
     def __init__(
         self,
-        vocab_size,
-        embedding_dim,
-        hidden_dim,
-        embedding_matrix,
-        num_stocks,
-        stock_emb_dim,
-        mdgnn: MDGNN,
-        layer_dim=1,
-        device="cpu",
-        fusion="concat"
+        mdgnn_model: MDGNN,
+        nodes_bank_path: str,
+        nodes_stock_path: str,
+        edges_path: str,
+        trading_dates,
+        device: torch.device,
+        hidden_dim: int = 128,
     ):
-        super().__init__()
         self.device = device
         self.hidden_dim = hidden_dim
-        self.fusion = fusion
-        self.mdgnn = mdgnn
+        self.cache = {}
 
-        self.lstm_encoder = LSTM_Encoder(
-            vocab_size=vocab_size,
-            embedding_dim=embedding_dim,
-            hidden_dim=hidden_dim,
-            embedding_matrix=embedding_matrix,
-            num_stocks=num_stocks,
-            stock_emb_dim=stock_emb_dim,
-            layer_dim=layer_dim,
-            device=device
+        nodes_bank_df = pd.read_parquet(nodes_bank_path)
+        nodes_stock_df = pd.read_parquet(nodes_stock_path)
+        edges_df = pd.read_parquet(edges_path)
+
+        quarter_snapshots = build_quarter_snapshots(
+            nodes_bank_df,
+            nodes_stock_df,
+            edges_df
         )
 
-        if fusion == "concat":
-            self.fusion_proj = nn.Linear(hidden_dim * 2, hidden_dim)
-        elif fusion == "add":
-            self.fusion_proj = None
-        else:
-            raise ValueError("fusion must be 'concat' or 'add'")
+        daily_snapshots = expand_quarter_snapshots_to_daily(
+            trading_dates=trading_dates,
+            quarter_snapshots=quarter_snapshots
+        )
 
-    def fuse(self, text_emb, graph_emb):
-        if self.fusion == "concat":
-            return self.fusion_proj(torch.cat([text_emb, graph_emb], dim=-1))
-        return text_emb + graph_emb
+        mdgnn_model = mdgnn_model.to(device)
+        mdgnn_model.eval()
 
-    def forward(self, x_text_seq, stock_ids_seq, graph_emb_seq):
-        text_embs = []
+        with torch.no_grad():
+            for dt, snap in daily_snapshots.items():
+                stock_feat = snap["stock_feat"].to(device)
+                bank_feat = snap["bank_feat"].to(device) if snap["bank_feat"] is not None else None
 
-        for t in range(x_text_seq.size(1)):
-            h_t = self.lstm_encoder(
-                x_text_seq[:, t, :],
-                stock_ids_seq[:, t]
-            )
-            text_embs.append(h_t)
+                industry_feat = snap["industry_feat"]
+                if industry_feat is not None:
+                    industry_feat = industry_feat.to(device)
 
-        text_emb_seq = torch.stack(text_embs, dim=1)
-        fused_seq = self.fuse(text_emb_seq, graph_emb_seq)
-        pred = self.mdgnn.forward_from_sequence(fused_seq)
-        return pred
+                edges = {}
+                for rel, value in snap["edges"].items():
+                    if value is None:
+                        edges[rel] = None
+                    else:
+                        edge_index, edge_attr = value
+                        edges[rel] = (
+                            edge_index.to(device),
+                            edge_attr.to(device) if edge_attr is not None else None
+                        )
 
+                stock_emb = mdgnn_model.encode_snapshot(
+                    stock_feat=stock_feat,
+                    bank_feat=bank_feat,
+                    industry_feat=industry_feat,
+                    edges=edges
+                )  # [num_stocks, hidden_dim]
 
-WINDOW_SIZE = 30
-BATCH_SIZE = 4
-HIDDEN_DIM = 128
-STOCK_EMB_DIM = 128
-TASK = "regression"
-MAX_EPOCHS = 5
-LR = 1e-3
-WEIGHT_DECAY = 1e-5
-PATIENCE = 2
+                pooled = stock_emb.mean(dim=0).detach().cpu()  # [hidden_dim]
+                self.cache[pd.Timestamp(dt).normalize()] = pooled
 
-TEXT_N_ROWS = None
-USE_ZERO_GRAPH_FALLBACK = True
+        self.sorted_dates = sorted(self.cache.keys())
 
-BANK_NODES_PATH = "nodes_bank.parquet"
-STOCK_NODES_PATH = "nodes_stock.parquet"
-BANK_STOCK_EDGES_PATH = "edges_bank_stock.parquet"
+    def lookup(self, date_value):
+        dt = pd.Timestamp(date_value).normalize()
+        if dt not in self.cache:
+            return torch.zeros(self.hidden_dim, dtype=torch.float32)
+        return self.cache[dt].clone().float()
 
+    def lookup_window(self, date_value, window_size=10):
+        dt = pd.Timestamp(date_value).normalize()
+        valid_dates = [d for d in self.sorted_dates if d <= dt]
 
-def safe_float(x, default=0.0):
-    if x is None:
-        return default
-    try:
-        return float(x)
-    except Exception:
-        return default
+        if len(valid_dates) == 0:
+            return torch.zeros(window_size, self.hidden_dim, dtype=torch.float32)
 
+        chosen = valid_dates[-window_size:]
+        seq = [self.cache[d].clone().float() for d in chosen]
 
-def to_timestamp(x):
-    return pd.Timestamp(x)
+        if len(seq) < window_size:
+            pad_len = window_size - len(seq)
+            pads = [torch.zeros(self.hidden_dim, dtype=torch.float32) for _ in range(pad_len)]
+            seq = pads + seq
 
-
-def build_stock_key_candidates(x):
-    if x is None:
-        return []
-
-    s = str(x).strip()
-    candidates = [s, s.upper(), s.lower()]
-
-    try:
-        f = float(s)
-        if f.is_integer():
-            candidates.append(str(int(f)))
-    except Exception:
-        pass
-
-    seen = set()
-    result = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            result.append(c)
-    return result
+        return torch.stack(seq, dim=0)  # [window_size, hidden_dim]
 
 
-def find_graph_embedding(
-    sid,
-    dt,
-    daily_stock_embeddings: Dict[pd.Timestamp, Dict[str, torch.Tensor]],
-    graph_emb_dim: int
-):
-    if dt in daily_stock_embeddings:
-        stock_map = daily_stock_embeddings[dt]
-        for key in build_stock_key_candidates(sid):
-            if key in stock_map:
-                return stock_map[key]
 
-    if USE_ZERO_GRAPH_FALLBACK:
-        return torch.zeros(graph_emb_dim, dtype=torch.float32)
-
-    return None
-
-
-class RollingWindowDataset(Dataset):
+# Dataset
+class NewsGraphDataset(Dataset):
     def __init__(
         self,
-        rows: List[dict],
-        stock2id: Dict[str, int],
-        daily_stock_embeddings: Dict[pd.Timestamp, Dict[str, torch.Tensor]],
+        rows,
+        stock2id: dict[str, int],
+        graph_cache: DailyGraphFeatureCache,
+        embedding_col: str,
+        feature_cols: list[str],
+        target_col: str,
         max_headline_len: int,
-        graph_emb_dim: int,
-        window_size: int = 30,
-        target_col: str = "close"
+        graph_hidden_dim: int = 128,
+        window_size: int = 10
     ):
-        self.rows = rows
-        self.stock2id = stock2id
-        self.daily_stock_embeddings = daily_stock_embeddings
-        self.max_headline_len = max_headline_len
-        self.graph_emb_dim = graph_emb_dim
-        self.window_size = window_size
-        self.target_col = target_col
         self.samples = []
+        self.window_size = window_size
+        self.graph_hidden_dim = graph_hidden_dim
 
-        grouped: Dict[str, List[dict]] = {}
         for row in rows:
-            sid = row.get("Stock_symbol")
-            if sid is None:
-                continue
-            grouped.setdefault(sid, []).append(row)
-
-        for sid, seq_rows in grouped.items():
-            seq_rows = sorted(seq_rows, key=lambda r: to_timestamp(r["Date"]))
-
-            if len(seq_rows) < window_size:
+            target = row.get(target_col)
+            if target is None:
                 continue
 
-            for end_idx in range(window_size - 1, len(seq_rows)):
-                window_rows = seq_rows[end_idx - window_size + 1:end_idx + 1]
-                target_row = seq_rows[end_idx]
+            stock_symbol = row.get("Stock_symbol")
+            if stock_symbol not in stock2id:
+                continue
 
-                target = target_row.get(target_col)
-                if target is None:
-                    continue
+            text_ids = row.get(embedding_col)
+            if text_ids is None:
+                text_ids = [0] * max_headline_len
+            else:
+                if len(text_ids) < max_headline_len:
+                    text_ids = text_ids + [0] * (max_headline_len - len(text_ids))
+                else:
+                    text_ids = text_ids[:max_headline_len]
 
-                self.samples.append((sid, window_rows, target_row))
+            numeric_feats = []
+            for col in feature_cols:
+                val = row.get(col)
+                if val is None:
+                    val = -1.0
+                numeric_feats.append(float(val))
+
+            date_value = row.get("Date")
+            graph_seq = graph_cache.lookup_window(date_value, window_size=window_size)
+
+            self.samples.append({
+                "text_ids": torch.tensor(text_ids, dtype=torch.long),
+                "numeric_feats": torch.tensor(numeric_feats, dtype=torch.float32),
+                "target": torch.tensor(float(target), dtype=torch.float32),
+                "stock_id": torch.tensor(stock2id[stock_symbol], dtype=torch.long),
+                "graph_seq": graph_seq if graph_seq is not None else torch.zeros(window_size, graph_hidden_dim, dtype=torch.float32),
+            })
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        sid, window_rows, target_row = self.samples[idx]
-
-        x_text_seq = []
-        stock_ids_seq = []
-        graph_emb_seq = []
-
-        stock_id_num = self.stock2id[sid]
-
-        for wr in window_rows:
-            embedded = wr.get("embedded_headline")
-            if embedded is None:
-                embedded = [0] * self.max_headline_len
-
-            if len(embedded) < self.max_headline_len:
-                embedded = embedded + [0] * (self.max_headline_len - len(embedded))
-            else:
-                embedded = embedded[:self.max_headline_len]
-
-            dt = to_timestamp(wr["Date"])
-            graph_emb = find_graph_embedding(
-                sid=sid,
-                dt=dt,
-                daily_stock_embeddings=self.daily_stock_embeddings,
-                graph_emb_dim=self.graph_emb_dim
-            )
-
-            if graph_emb is None:
-                graph_emb = torch.zeros(self.graph_emb_dim, dtype=torch.float32)
-
-            x_text_seq.append(embedded)
-            stock_ids_seq.append(stock_id_num)
-            graph_emb_seq.append(graph_emb)
-
-        x_text_seq = torch.tensor(x_text_seq, dtype=torch.long)
-        stock_ids_seq = torch.tensor(stock_ids_seq, dtype=torch.long)
-        graph_emb_seq = torch.stack(graph_emb_seq, dim=0).float()
-        target = torch.tensor(safe_float(target_row[self.target_col]), dtype=torch.float32)
-        row_idx = torch.tensor(int(target_row.get("row_index", -1)), dtype=torch.long)
-
-        return x_text_seq, stock_ids_seq, graph_emb_seq, target, row_idx
+        s = self.samples[idx]
+        return (
+            s["text_ids"],
+            s["numeric_feats"],
+            s["target"],
+            s["stock_id"],
+            s["graph_seq"],
+        )
 
 
-def split_rows_by_date(rows: List[dict], train_ratio=0.8, val_ratio=0.1):
-    unique_dates = sorted({to_timestamp(r["Date"]) for r in rows})
-    n_dates = len(unique_dates)
 
-    train_cut = int(n_dates * train_ratio)
-    val_cut = int(n_dates * (train_ratio + val_ratio))
+# Fusion model
+class LSTM_MDGNN_Fusion(nn.Module):
+    def __init__(
+        self,
+        lstm_encoder: LSTM_Encoder,
+        mdgnn_model: MDGNN,
+        num_numeric_features: int,
+        graph_hidden_dim: int = 128,
+        hidden_dim: int = 128,
+        dropout: float = 0.1,
+        task: str = "regression",
+    ):
+        super().__init__()
+        assert task in ["regression", "classification"]
 
-    train_dates = set(unique_dates[:train_cut])
-    val_dates = set(unique_dates[train_cut:val_cut])
-    test_dates = set(unique_dates[val_cut:])
+        self.lstm_encoder = lstm_encoder
+        self.mdgnn_model = mdgnn_model
+        self.task = task
 
-    train_rows = [r for r in rows if to_timestamp(r["Date"]) in train_dates]
-    val_rows = [r for r in rows if to_timestamp(r["Date"]) in val_dates]
-    test_rows = [r for r in rows if to_timestamp(r["Date"]) in test_dates]
+        self.numeric_proj = nn.Sequential(
+            nn.Linear(num_numeric_features, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
 
-    return train_rows, val_rows, test_rows
+        self.graph_proj = nn.Sequential(
+            nn.Linear(graph_hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        self.fusion_head = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, text_ids, numeric_feats, stock_ids, graph_seq):
+        # Text branch
+        text_repr = self.lstm_encoder(text_ids, stock_ids)   # [B, H]
+
+        # Numeric branch
+        num_repr = self.numeric_proj(numeric_feats)          # [B, H]
+
+        # Graph temporal branch
+        # graph_seq: [B, T, H]
+        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(graph_seq, return_attention=True)
+        graph_repr = self.graph_proj(graph_repr)             # [B, H]
+
+        fused = torch.cat([text_repr, num_repr, graph_repr], dim=1)
+        out = self.fusion_head(fused).squeeze(-1)
+
+        if self.task == "classification":
+            return torch.sigmoid(out)
+        return out
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-l = LazyHeadlineVectorizer(
-    "../prepared_data_2018-01-01_2023-12-31.parquet",
-    n_rows=TEXT_N_ROWS
-)
-l.run()
+# Rolling split helpers
+def make_halfyear_rolling_splits(
+    data: pl.LazyFrame,
+    start_date: str = "2018-01-01",
+    end_date: str = "2023-02-28",
+    train_months: int = 6,
+    val_months: int = 1,
+    test_months: int = 6,
+):
+    df = data.sort("Date").collect(engine="streaming").to_pandas()
+    df["Date"] = pd.to_datetime(df["Date"])
+    df = df[
+        (df["Date"] >= pd.Timestamp(start_date)) &
+        (df["Date"] <= pd.Timestamp(end_date))
+    ].copy()
 
-if "Sentiment_llm_mean_filled" in l.lf.collect_schema().names():
-    l.lf = l.lf.drop(
+    splits = []
+    anchor = pd.Timestamp(start_date)
+
+    while True:
+        # Train: first 6 months
+        train_start = anchor
+        train_end = train_start + pd.DateOffset(months=train_months) - pd.Timedelta(days=1)
+
+        # Validation: the next 1 month after training
+        val_start = train_end + pd.Timedelta(days=1)
+        val_end = val_start + pd.DateOffset(months=val_months) - pd.Timedelta(days=1)
+
+        # Test: the following 6 months after validation
+        test_start = val_end + pd.Timedelta(days=1)
+        test_end = test_start + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
+
+        # Stop if validation or test period starts beyond available data
+        if val_start > pd.Timestamp(end_date) or test_start > pd.Timestamp(end_date):
+            break
+
+        test_end = min(test_end, pd.Timestamp(end_date))
+
+        train_df = df[(df["Date"] >= train_start) & (df["Date"] <= train_end)].copy()
+        val_df = df[(df["Date"] >= val_start) & (df["Date"] <= val_end)].copy()
+        test_df = df[(df["Date"] >= test_start) & (df["Date"] <= test_end)].copy()
+
+        if len(train_df) > 0 and len(val_df) > 0 and len(test_df) > 0:
+            splits.append({
+                "train_start": train_start,
+                "train_end": train_end,
+                "val_start": val_start,
+                "val_end": val_end,
+                "test_start": test_start,
+                "test_end": test_end,
+                "train_rows": train_df.to_dict("records"),
+                "val_rows": val_df.to_dict("records"),
+                "test_rows": test_df.to_dict("records"),
+            })
+
+        # Move anchor forward by 6 months: one model every half year
+        anchor = anchor + pd.DateOffset(months=test_months)
+
+        if anchor > pd.Timestamp(end_date):
+            break
+
+    return splits
+
+
+def build_loaders_for_split(
+    split_dict,
+    stock2id,
+    graph_cache,
+    batch_size,
+    max_headline_len,
+    feature_cols,
+    target_col,
+    window_size=10,
+):
+    train_dataset = NewsGraphDataset(
+        rows=split_dict["train_rows"],
+        stock2id=stock2id,
+        graph_cache=graph_cache,
+        embedding_col="embedded_headline",
+        feature_cols=feature_cols,
+        target_col=target_col,
+        max_headline_len=max_headline_len,
+        window_size=window_size,
+    )
+
+    val_dataset = NewsGraphDataset(
+        rows=split_dict["val_rows"],
+        stock2id=stock2id,
+        graph_cache=graph_cache,
+        embedding_col="embedded_headline",
+        feature_cols=feature_cols,
+        target_col=target_col,
+        max_headline_len=max_headline_len,
+        window_size=window_size,
+    )
+
+    test_dataset = NewsGraphDataset(
+        rows=split_dict["test_rows"],
+        stock2id=stock2id,
+        graph_cache=graph_cache,
+        embedding_col="embedded_headline",
+        feature_cols=feature_cols,
+        target_col=target_col,
+        max_headline_len=max_headline_len,
+        window_size=window_size,
+    )
+
+    return (
+        DataLoader(train_dataset, batch_size=batch_size, shuffle=True),
+        DataLoader(val_dataset, batch_size=batch_size, shuffle=False),
+        DataLoader(test_dataset, batch_size=batch_size, shuffle=False),
+    )
+
+
+
+# Main
+if __name__ == "__main__":
+    # 1. Load and vectorize prepared data
+    l = LazyHeadlineVectorizer(
+        "../prepared_data_2018-01-01_2023-12-31.parquet",
+        n_rows=1000
+    )
+    l.run()
+
+    # Optional cleanup if these columns exist
+    drop_cols = [
         "Sentiment_llm_mean_filled",
         "Sentiment_llm_median_filled",
         "Sentiment_llm_mode_filled"
+    ]
+    schema_names = l.lf.collect_schema().names()
+    existing_drop_cols = [c for c in drop_cols if c in schema_names]
+    if existing_drop_cols:
+        l.lf = l.lf.drop(*existing_drop_cols)
+
+
+    # 2. Build stock symbol -> integer id for LSTM branch
+    stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_list())
+    stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+    # 3. Prepare one MDGNN model for graph cache building
+    mdgnn_for_cache = MDGNN(
+        stock_in_dim=4,
+        bank_in_dim=4,
+        industry_in_dim=1,
+        edge_dims={"SB": 5, "BS": 5},
+        hidden_dim=HIDDEN_DIM,
+        gnn_layers=GNN_LAYERS,
+        num_heads=4,
+        ff_dim=256,
+        dropout=0.1,
+        task="regression"
+    ).to(device)
+
+    trading_dates = (
+        l.lf.select("Date")
+        .unique()
+        .sort("Date")
+        .collect()
+        .to_series()
+        .to_list()
     )
 
-if "row_index" not in l.lf.collect_schema().names():
-    l.lf = l.lf.with_row_count("row_index")
+    graph_cache = DailyGraphFeatureCache(
+        mdgnn_model=mdgnn_for_cache,
+        nodes_bank_path="nodes_bank.parquet",
+        nodes_stock_path="nodes_stock.parquet",
+        edges_path="edges_bank_stock.parquet",
+        trading_dates=trading_dates,
+        device=device,
+        hidden_dim=HIDDEN_DIM,
+    )
 
-if "close" not in l.lf.collect_schema().names():
-    raise ValueError("Column 'close' is missing from the dataset.")
 
-stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_list())
-stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
-num_stocks = len(stock2id)
+    # 4. Create rolling splits
+    rolling_splits = make_halfyear_rolling_splits(
+        data=l.lf,
+        start_date=ROLLING_START_DATE,
+        end_date=ROLLING_END_DATE,
+        train_months=TRAIN_MONTHS,
+        val_months=VAL_MONTHS,
+        test_months=TEST_MONTHS,
+    )
 
-data = l.lf.sort(["Stock_symbol", "Date"]).collect(engine="streaming").to_dicts()
+    print(f"Number of rolling models: {len(rolling_splits)}")
 
-if len(data) == 0:
-    raise ValueError("No rows were loaded from the dataset.")
+    all_test_losses = []
 
-nodes_bank_df = pd.read_parquet(BANK_NODES_PATH)
-nodes_stock_df = pd.read_parquet(STOCK_NODES_PATH)
-edges_df = pd.read_parquet(BANK_STOCK_EDGES_PATH)
 
-quarter_snapshots = build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df)
+    # 5. Train one model per 6-month rolling period
+    for split_idx, split_info in enumerate(rolling_splits, start=1):
+        print("\n" + "=" * 60)
+        print(f"Rolling model {split_idx}")
+        print(f"Train: {split_info['train_start'].date()} -> {split_info['train_end'].date()}")
+        print(f"Val:   {split_info['val_start'].date()} -> {split_info['val_end'].date()}")
+        print(f"Test:  {split_info['test_start'].date()} -> {split_info['test_end'].date()}")
 
-all_trading_dates = sorted({to_timestamp(row["Date"]) for row in data})
-daily_snapshots = expand_quarter_snapshots_to_daily(all_trading_dates, quarter_snapshots)
-
-edge_dims = {
-    "SS": 0,
-    "SB": 5,
-    "BS": 5,
-    "SI": 0,
-    "IS": 0,
-    "II": 0,
-}
-
-mdgnn = MDGNN(
-    stock_in_dim=4,
-    bank_in_dim=4,
-    industry_in_dim=1,
-    edge_dims=edge_dims,
-    hidden_dim=HIDDEN_DIM,
-    gnn_layers=2,
-    num_heads=4,
-    ff_dim=256,
-    dropout=0.1,
-    alibi_slope=1.0,
-    task=TASK
-).to(device)
-
-daily_stock_embeddings: Dict[pd.Timestamp, Dict[str, torch.Tensor]] = {}
-
-mdgnn.eval()
-with torch.no_grad():
-    for dt, snapshot in tqdm.tqdm(daily_snapshots.items(), desc="Precomputing graph embeddings"):
-        stock_repr = mdgnn.encode_snapshot(
-            stock_feat=snapshot["stock_feat"].to(device),
-            bank_feat=snapshot["bank_feat"].to(device),
-            industry_feat=None,
-            edges=snapshot["edges"]
+        train_loader, val_loader, test_loader = build_loaders_for_split(
+            split_dict=split_info,
+            stock2id=stock2id,
+            graph_cache=graph_cache,
+            batch_size=BATCH_SIZE,
+            max_headline_len=l.max_headline_len,
+            feature_cols=FEATURE_COLS,
+            target_col=TARGET_COL,
+            window_size=WINDOW_SIZE,
         )
 
-        stock_ids_snapshot = snapshot["stock_ids"]
-        per_stock = {}
-        for idx, sid in enumerate(stock_ids_snapshot):
-            per_stock[str(sid).strip()] = stock_repr[idx].detach().cpu()
+        if len(train_loader.dataset) == 0 or len(val_loader.dataset) == 0 or len(test_loader.dataset) == 0:
+            print(f"Skipping split {split_idx} because one dataset is empty.")
+            continue
 
-        daily_stock_embeddings[dt] = per_stock
+        # Reinitialize model every 6 months
+        lstm_encoder = LSTM_Encoder(
+            vocab_size=len(l.word2id),
+            embedding_dim=l.vector_size,
+            hidden_dim=HIDDEN_DIM,
+            embedding_matrix=l.embedding_matrix,
+            num_stocks=len(stocks),
+            stock_emb_dim=HIDDEN_DIM,
+            layer_dim=1,
+            device=device
+        ).to(device)
 
-graph_emb_dim = None
-for _, mp in daily_stock_embeddings.items():
-    if len(mp) > 0:
-        graph_emb_dim = next(iter(mp.values())).shape[-1]
-        break
+        mdgnn = MDGNN(
+            stock_in_dim=4,
+            bank_in_dim=4,
+            industry_in_dim=1,
+            edge_dims={"SB": 5, "BS": 5},
+            hidden_dim=HIDDEN_DIM,
+            gnn_layers=GNN_LAYERS,
+            num_heads=4,
+            ff_dim=256,
+            dropout=0.1,
+            task="regression"
+        ).to(device)
 
-if graph_emb_dim is None:
-    raise ValueError("Could not infer graph embedding dimension.")
+        model = LSTM_MDGNN_Fusion(
+            lstm_encoder=lstm_encoder,
+            mdgnn_model=mdgnn,
+            num_numeric_features=len(FEATURE_COLS),
+            graph_hidden_dim=HIDDEN_DIM,
+            hidden_dim=HIDDEN_DIM,
+            dropout=0.1,
+            task="regression",
+        ).to(device)
 
-train_rows, val_rows, test_rows = split_rows_by_date(data, train_ratio=0.8, val_ratio=0.1)
+        criterion = nn.MSELoss()
+        optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
-train_dataset = RollingWindowDataset(
-    rows=train_rows,
-    stock2id=stock2id,
-    daily_stock_embeddings=daily_stock_embeddings,
-    max_headline_len=l.max_headline_len,
-    graph_emb_dim=graph_emb_dim,
-    window_size=WINDOW_SIZE,
-    target_col="close"
-)
+        best_val_loss = float("inf")
+        counter = 0
+        save_path = f"best_fusion_model_split_{split_idx}.pt"
 
-val_dataset = RollingWindowDataset(
-    rows=val_rows,
-    stock2id=stock2id,
-    daily_stock_embeddings=daily_stock_embeddings,
-    max_headline_len=l.max_headline_len,
-    graph_emb_dim=graph_emb_dim,
-    window_size=WINDOW_SIZE,
-    target_col="close"
-)
+        for epoch in range(MAX_EPOCHS):
+            # Training
+            model.train()
+            train_loss = 0.0
 
-test_dataset = RollingWindowDataset(
-    rows=test_rows,
-    stock2id=stock2id,
-    daily_stock_embeddings=daily_stock_embeddings,
-    max_headline_len=l.max_headline_len,
-    graph_emb_dim=graph_emb_dim,
-    window_size=WINDOW_SIZE,
-    target_col="close"
-)
+            progress_bar = tqdm.tqdm(
+                train_loader,
+                desc=f"Split {split_idx} Epoch {epoch + 1}/{MAX_EPOCHS}",
+                leave=True
+            )
 
-if len(train_dataset) == 0:
-    raise ValueError("train_dataset is empty.")
+            for X_text_batch, X_num_batch, Y_batch, stock_batch, graph_seq_batch in progress_bar:
+                X_text_batch = X_text_batch.to(device)
+                X_num_batch = X_num_batch.to(device)
+                Y_batch = Y_batch.to(device)
+                stock_batch = stock_batch.to(device)
+                graph_seq_batch = graph_seq_batch.to(device)
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False) if len(val_dataset) > 0 else None
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False) if len(test_dataset) > 0 else None
+                optimizer.zero_grad()
 
-model = LSTM_MDGNN_Fusion(
-    vocab_size=len(l.word2id),
-    embedding_dim=l.vector_size,
-    hidden_dim=HIDDEN_DIM,
-    embedding_matrix=l.embedding_matrix,
-    num_stocks=num_stocks,
-    stock_emb_dim=STOCK_EMB_DIM,
-    mdgnn=mdgnn,
-    layer_dim=1,
-    device=device,
-    fusion="concat"
-).to(device)
+                preds = model(
+                    text_ids=X_text_batch,
+                    numeric_feats=X_num_batch,
+                    stock_ids=stock_batch,
+                    graph_seq=graph_seq_batch
+                )
 
-criterion = nn.MSELoss()
-optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+                loss = criterion(preds, Y_batch)
+                loss.backward()
+                optimizer.step()
 
-best_val_loss = float("inf")
-counter = 0
+                train_loss += loss.item()
+                progress_bar.set_postfix(loss=loss.item())
 
-for epoch in range(MAX_EPOCHS):
-    model.train()
-    train_loss = 0.0
 
-    progress_bar = tqdm.tqdm(train_loader, desc=f"Epoch {epoch + 1}/{MAX_EPOCHS}", leave=True)
-    for x_text_seq, stock_ids_seq, graph_emb_seq, y_batch, _ in progress_bar:
-        x_text_seq = x_text_seq.to(device)
-        stock_ids_seq = stock_ids_seq.to(device)
-        graph_emb_seq = graph_emb_seq.to(device)
-        y_batch = y_batch.to(device)
+            # Validation
+            model.eval()
+            val_loss = 0.0
 
-        optimizer.zero_grad()
+            with torch.no_grad():
+                for X_text_val, X_num_val, Y_val, stock_val, graph_seq_val in val_loader:
+                    X_text_val = X_text_val.to(device)
+                    X_num_val = X_num_val.to(device)
+                    Y_val = Y_val.to(device)
+                    stock_val = stock_val.to(device)
+                    graph_seq_val = graph_seq_val.to(device)
 
-        preds = model(x_text_seq, stock_ids_seq, graph_emb_seq)
-        loss = criterion(preds, y_batch)
+                    preds = model(
+                        text_ids=X_text_val,
+                        numeric_feats=X_num_val,
+                        stock_ids=stock_val,
+                        graph_seq=graph_seq_val
+                    )
 
-        loss.backward()
-        optimizer.step()
+                    val_loss += criterion(preds, Y_val).item()
 
-        train_loss += loss.item()
-        progress_bar.set_postfix(loss=loss.item())
+            avg_train_loss = train_loss / max(len(train_loader), 1)
+            avg_val_loss = val_loss / max(len(val_loader), 1)
 
-    avg_train_loss = train_loss / max(len(train_loader), 1)
+            print(f"Split {split_idx} | Epoch {epoch + 1}: Train={avg_train_loss:.4f}, Val={avg_val_loss:.4f}")
 
-    if val_loader is not None:
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                counter = 0
+                torch.save(model.state_dict(), save_path)
+            else:
+                counter += 1
+                if counter >= PATIENCE:
+                    print(f"Early stopping at epoch {epoch + 1}")
+                    break
+
+
+        # Fixed-parameter prediction on following 6 months
+        print(f"Testing split {split_idx}...")
+        model.load_state_dict(torch.load(save_path, map_location=device))
         model.eval()
-        val_loss = 0.0
 
+        test_loss = 0.0
         with torch.no_grad():
-            for x_text_seq, stock_ids_seq, graph_emb_seq, y_batch, _ in val_loader:
-                x_text_seq = x_text_seq.to(device)
-                stock_ids_seq = stock_ids_seq.to(device)
-                graph_emb_seq = graph_emb_seq.to(device)
-                y_batch = y_batch.to(device)
+            for X_text_test, X_num_test, Y_test, stock_test, graph_seq_test in test_loader:
+                X_text_test = X_text_test.to(device)
+                X_num_test = X_num_test.to(device)
+                Y_test = Y_test.to(device)
+                stock_test = stock_test.to(device)
+                graph_seq_test = graph_seq_test.to(device)
 
-                preds = model(x_text_seq, stock_ids_seq, graph_emb_seq)
-                val_loss += criterion(preds, y_batch).item()
+                preds = model(
+                    text_ids=X_text_test,
+                    numeric_feats=X_num_test,
+                    stock_ids=stock_test,
+                    graph_seq=graph_seq_test
+                )
 
-        avg_val_loss = val_loss / max(len(val_loader), 1)
-        print(f"Epoch {epoch + 1}: train_loss={avg_train_loss:.4f}, val_loss={avg_val_loss:.4f}")
+                test_loss += criterion(preds, Y_test).item()
 
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            counter = 0
-            torch.save(model.state_dict(), "best_model.pt")
-        else:
-            counter += 1
-            if counter >= PATIENCE:
-                break
+        avg_test_loss = test_loss / max(len(test_loader), 1)
+        all_test_losses.append(avg_test_loss)
+        print(f"Split {split_idx} Test Loss={avg_test_loss:.4f}")
+
+    print("\nAll rolling test losses:", all_test_losses)
+    if len(all_test_losses) > 0:
+        print("Average rolling test loss:", sum(all_test_losses) / len(all_test_losses))
     else:
-        print(f"Epoch {epoch + 1}: train_loss={avg_train_loss:.4f}")
-        torch.save(model.state_dict(), "best_model.pt")
-
-model.load_state_dict(torch.load("best_model.pt", map_location=device))
-
-all_row_idxs = []
-all_preds = []
-
-if test_loader is not None:
-    model.eval()
-    with torch.no_grad():
-        for x_text_seq, stock_ids_seq, graph_emb_seq, _, row_idx in test_loader:
-            x_text_seq = x_text_seq.to(device)
-            stock_ids_seq = stock_ids_seq.to(device)
-            graph_emb_seq = graph_emb_seq.to(device)
-
-            preds = model(x_text_seq, stock_ids_seq, graph_emb_seq)
-
-            for idx, pred in zip(row_idx.cpu(), preds.cpu()):
-                if int(idx) != -1:
-                    all_row_idxs.append(int(idx))
-                    all_preds.append(float(pred))
-
-if len(all_row_idxs) > 0:
-    preds_lf = pl.LazyFrame({
-        "row_index": all_row_idxs,
-        "prediction": all_preds
-    })
-
-    original_lf = l.lf
-    lf_joined = original_lf.join(preds_lf, on="row_index", how="inner")
-    print(lf_joined.collect())
+        print("No valid rolling test results.")
