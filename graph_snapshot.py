@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import torch
 
 
@@ -72,10 +73,13 @@ def build_quarter_snapshots(nodes_bank_df, nodes_stock_df, edges_df):
         )
 
         # SB: bank -> stock
-        edge_index_sb = torch.tensor([
-            edge_df_q["bank_id"].astype(str).map(bank2idx).to_numpy(),
-            edge_df_q["stock_id"].astype(str).map(stock2idx).to_numpy()
-        ], dtype=torch.long)
+        edge_index_sb = torch.tensor(
+            np.vstack([
+                edge_df_q["bank_id"].astype(str).map(bank2idx).to_numpy(),
+                edge_df_q["stock_id"].astype(str).map(stock2idx).to_numpy()
+            ]),
+            dtype=torch.long
+        )
 
         edge_attr_sb = torch.tensor(
             edge_df_q[edge_feat_cols].fillna(0.0).to_numpy(),
