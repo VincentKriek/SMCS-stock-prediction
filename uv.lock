@@ -1176,11 +1176,22 @@ wheels = [
 name = "pytorch-triton-rocm"
 version = "3.1.0"
 source = { registry = "https://download.pytorch.org/whl/rocm6.2" }
+resolution-markers = [
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
 dependencies = [
     { name = "filelock", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/pytorch_triton_rocm-3.1.0-cp311-cp311-linux_x86_64.whl", hash = "sha256:4b0a563986aa591ecbbfd69d53f171447f64ba453cecaafd80d853b3f1047eca" },
+]
+
+[[package]]
+name = "pytorch-triton-rocm"
+version = "3.5.1"
+source = { registry = "https://download.pytorch.org/whl/rocm6.2" }
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/pytorch_triton_rocm-3.5.1-cp311-cp311-linux_x86_64.whl" },
 ]
 
 [[package]]
@@ -1298,9 +1309,29 @@ wheels = [
 name = "setuptools"
 version = "81.0.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'darwin' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "sys_platform == 'darwin'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/1c/73e719955c59b8e424d015ab450f51c0af856ae46ea2da83eba51cc88de1/setuptools-81.0.0.tar.gz", hash = "sha256:487b53915f52501f0a79ccfd0c02c165ffe06631443a886740b91af4b7a5845a", size = 1198299, upload-time = "2026-02-06T21:10:39.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl", hash = "sha256:fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6", size = 1062021, upload-time = "2026-02-06T21:10:37.175Z" },
+]
+
+[[package]]
+name = "setuptools"
+version = "82.0.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+    "sys_platform == 'emscripten'",
+    "sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4f/db/cfac1baf10650ab4d1c111714410d2fbb77ac5a616db26775db562c8fab2/setuptools-82.0.1.tar.gz", hash = "sha256:7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9", size = 1152316, upload-time = "2026-03-09T12:47:17.221Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9d/76/f789f7a86709c6b087c5a2f52f911838cad707cc613162401badc665acfe/setuptools-82.0.1-py3-none-any.whl", hash = "sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb", size = 1006223, upload-time = "2026-03-09T12:47:15.026Z" },
 ]
 
 [[package]]
@@ -1366,7 +1397,8 @@ cu121 = [
     { name = "torchvision", version = "0.20.1+cu121", source = { registry = "https://download.pytorch.org/whl/cu121" } },
 ]
 rocm60 = [
-    { name = "pytorch-triton-rocm", marker = "sys_platform == 'linux'" },
+    { name = "pytorch-triton-rocm", version = "3.1.0", source = { registry = "https://download.pytorch.org/whl/rocm6.2" }, marker = "(sys_platform == 'linux' and extra == 'extra-21-smcs-stock-prediction-rocm60') or (extra == 'extra-21-smcs-stock-prediction-cu121' and extra == 'extra-21-smcs-stock-prediction-rocm60') or (extra == 'extra-21-smcs-stock-prediction-cpu' and extra == 'extra-21-smcs-stock-prediction-cu121') or (extra == 'extra-21-smcs-stock-prediction-cpu' and extra == 'extra-21-smcs-stock-prediction-rocm60')" },
+    { name = "pytorch-triton-rocm", version = "3.5.1", source = { registry = "https://download.pytorch.org/whl/rocm6.2" }, marker = "(extra == 'extra-21-smcs-stock-prediction-cpu' and extra == 'extra-21-smcs-stock-prediction-cu121') or (extra == 'extra-21-smcs-stock-prediction-cpu' and extra == 'extra-21-smcs-stock-prediction-rocm60') or (extra == 'extra-21-smcs-stock-prediction-cu121' and extra == 'extra-21-smcs-stock-prediction-rocm60')" },
     { name = "torch", version = "2.5.1+rocm6.2", source = { registry = "https://download.pytorch.org/whl/rocm6.2" } },
     { name = "torchvision", version = "0.20.1+rocm6.2", source = { registry = "https://download.pytorch.org/whl/rocm6.2" } },
 ]
@@ -1408,7 +1440,8 @@ dependencies = [
     { name = "nltk" },
     { name = "pycountry" },
     { name = "requests" },
-    { name = "setuptools" },
+    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-21-smcs-stock-prediction-cpu' or (extra == 'extra-21-smcs-stock-prediction-cu121' and extra == 'extra-21-smcs-stock-prediction-rocm60')" },
+    { name = "setuptools", version = "82.0.1", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-21-smcs-stock-prediction-cu121' or extra == 'extra-21-smcs-stock-prediction-rocm60' or extra != 'extra-21-smcs-stock-prediction-cpu'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bc/5f/c11fc2a790145cc1b911f1b82799a7fa377adab7fe9ddc9c5f3cf856d45d/sumy-0.12.0.tar.gz", hash = "sha256:1fbe909ea534bbc895cd3b3f4ae110adcfe30e2a827bd82be0ea1d7c95b5f7f3", size = 58902, upload-time = "2026-02-14T21:00:11.881Z" }
 wheels = [
@@ -1516,7 +1549,7 @@ dependencies = [
     { name = "fsspec" },
     { name = "jinja2" },
     { name = "networkx" },
-    { name = "pytorch-triton-rocm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "pytorch-triton-rocm", version = "3.1.0", source = { registry = "https://download.pytorch.org/whl/rocm6.2" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "sympy", version = "1.13.1", source = { registry = "https://pypi.org/simple" } },
     { name = "typing-extensions" },
 ]
@@ -1536,7 +1569,7 @@ dependencies = [
     { name = "fsspec", marker = "sys_platform == 'darwin'" },
     { name = "jinja2", marker = "sys_platform == 'darwin'" },
     { name = "networkx", marker = "sys_platform == 'darwin'" },
-    { name = "setuptools", marker = "sys_platform == 'darwin'" },
+    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
 ]
@@ -1558,7 +1591,7 @@ dependencies = [
     { name = "fsspec", marker = "sys_platform != 'darwin'" },
     { name = "jinja2", marker = "sys_platform != 'darwin'" },
     { name = "networkx", marker = "sys_platform != 'darwin'" },
-    { name = "setuptools", marker = "sys_platform != 'darwin'" },
+    { name = "setuptools", version = "81.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
     { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
     { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]

@@ -34,9 +34,7 @@ FEATURE_COLS = [
     "low",
     "close",
     "adj close",
-    "volume",
-    "Stock_symbol",
-    "embedded_headline",
+    "volume"
 ]
 
 TARGET_COL = "target_return"
@@ -530,6 +528,8 @@ if __name__ == "__main__":
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
+
     print(f"DEVICE: {device}")
 
     mdgnn_for_cache = MDGNN(
