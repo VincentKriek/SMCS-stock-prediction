@@ -521,9 +521,10 @@ if __name__ == "__main__":
     )
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 
+    cache_device  = torch.device("cpu")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device("cpu")
 
+    print(f"CACHE DEVICE: {cache_device}")
     print(f"DEVICE: {device}")
 
     mdgnn_for_cache = MDGNN(
@@ -536,7 +537,7 @@ if __name__ == "__main__":
         num_heads=4,
         ff_dim=256,
         dropout=0.1,
-    ).to(device)
+    ).to(cache_device)
 
     trading_dates = (
         l.lf.select("Date").unique().sort("Date").collect().to_series().to_list()
@@ -550,7 +551,7 @@ if __name__ == "__main__":
         edges_bank_stock_path="data/graphs/edges_bank_stock.parquet",
         edges_stock_stock_path="data/graphs/edges_stock_stock.parquet",
         trading_dates=trading_dates,
-        device=device,
+        device=cache_device,
         hidden_dim=HIDDEN_DIM,
     )
 
@@ -753,3 +754,9 @@ if __name__ == "__main__":
 
         print(f"Split {split_idx} | Test={avg_test_loss:.6f}")
         print(f"Split {split_idx} | Predictions={all_preds}")
+
+        df = pd.DataFrame({
+            "prediction": all_preds,
+            "target": all_targets
+        })
+        df.to_csv(f"predictions_split_{split_idx}.csv", index=False)
