@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
 
 
-
 # Configuration
 NEWS_N_ROWS = None
 
@@ -47,34 +46,39 @@ class DailyGraphFeatureCache:
         self.hidden_dim = hidden_dim
         self.cache = {}
 
-
         # 1. Determine needed quarters
         trading_ts = [pd.Timestamp(x) for x in trading_dates]
-        needed_quarters = sorted({
-            (ts.year, ((ts.month - 1) // 3 + 1))
-            for ts in trading_ts
-        })
+        needed_quarters = sorted(
+            {(ts.year, ((ts.month - 1) // 3 + 1)) for ts in trading_ts}
+        )
 
         quarter_expr = None
         for y, q in needed_quarters:
-            cond = ((pl.col("year") == y) & (pl.col("quarter") == q))
+            cond = (pl.col("year") == y) & (pl.col("quarter") == q)
             quarter_expr = cond if quarter_expr is None else (quarter_expr | cond)
 
         if quarter_expr is None:
             self.sorted_dates = []
             return
 
-
         # 2. Read only required node columns
         stock_cols = [
-            "year", "quarter", "stock_id",
-            "num_holders", "total_institutional_value",
-            "total_institutional_shares", "num_quarters_held"
+            "year",
+            "quarter",
+            "stock_id",
+            "num_holders",
+            "total_institutional_value",
+            "total_institutional_shares",
+            "num_quarters_held",
         ]
         bank_cols = [
-            "year", "quarter", "bank_id",
-            "num_stocks_held", "total_aum_value",
-            "avg_position_size", "num_quarters_active"
+            "year",
+            "quarter",
+            "bank_id",
+            "num_stocks_held",
+            "total_aum_value",
+            "avg_position_size",
+            "num_quarters_active",
         ]
 
         print("Loading stock node data...")
@@ -99,15 +103,24 @@ class DailyGraphFeatureCache:
             self.sorted_dates = []
             return
 
-
         # 3. Read only required edge columns
         edge_bs_cols = [
-            "year", "quarter", "bank_id", "stock_id",
-            "total_value", "total_shares",
-            "voting_sole", "voting_shared", "voting_none"
+            "year",
+            "quarter",
+            "bank_id",
+            "stock_id",
+            "total_value",
+            "total_shares",
+            "voting_sole",
+            "voting_shared",
+            "voting_none",
         ]
         edge_ss_cols = [
-            "year", "quarter", "stock_id_1", "stock_id_2", "co_holder_count"
+            "year",
+            "quarter",
+            "stock_id_1",
+            "stock_id_2",
+            "co_holder_count",
         ]
 
         print("Loading bank-stock edge data...")
@@ -127,7 +140,6 @@ class DailyGraphFeatureCache:
             .collect(engine="streaming")
             .to_pandas()
         )
-
 
         # 4. Build quarter snapshots
         print("Building quarter snapshots...")
@@ -201,7 +213,10 @@ class DailyGraphFeatureCache:
 
         if len(seq) < window_size:
             pad_len = window_size - len(seq)
-            pads = [torch.zeros(self.hidden_dim, dtype=torch.float32) for _ in range(pad_len)]
+            pads = [
+                torch.zeros(self.hidden_dim, dtype=torch.float32)
+                for _ in range(pad_len)
+            ]
             seq = pads + seq
 
         return torch.stack(seq, dim=0)
@@ -252,13 +267,21 @@ class NewsGraphDataset(Dataset):
             date_value = row.get("Date")
             graph_seq = graph_cache.lookup_window(date_value, window_size=window_size)
 
-            self.samples.append({
-                "text_ids": torch.tensor(text_ids, dtype=torch.long),
-                "numeric_feats": torch.tensor(numeric_feats, dtype=torch.float32),
-                "target": torch.tensor(float(target), dtype=torch.float32),
-                "stock_id": torch.tensor(stock2id[stock_symbol], dtype=torch.long),
-                "graph_seq": graph_seq if graph_seq is not None else torch.zeros(window_size, graph_hidden_dim, dtype=torch.float32),
-            })
+            self.samples.append(
+                {
+                    "text_ids": torch.tensor(text_ids, dtype=torch.long),
+                    "numeric_feats": torch.tensor(numeric_feats, dtype=torch.float32),
+                    "target": torch.tensor(float(target), dtype=torch.float32),
+                    "stock_id": torch.tensor(stock2id[stock_symbol], dtype=torch.long),
+                    "graph_seq": (
+                        graph_seq
+                        if graph_seq is not None
+                        else torch.zeros(
+                            window_size, graph_hidden_dim, dtype=torch.float32
+                        )
+                    ),
+                }
+            )
 
     def __len__(self):
         return len(self.samples)
@@ -312,7 +335,9 @@ class LSTM_MDGNN_Fusion(nn.Module):
         text_repr = self.lstm_encoder(text_ids, stock_ids)
         num_repr = self.numeric_proj(numeric_feats)
 
-        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(graph_seq, return_attention=True)
+        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
+            graph_seq, return_attention=True
+        )
         graph_repr = self.graph_proj(graph_repr)
 
         fused = torch.cat([text_repr, num_repr, graph_repr], dim=1)
@@ -355,11 +380,9 @@ def make_halfyear_rolling_splits(
 
     print("Building rolling splits...")
     df = (
-        data
-        .select(used_cols)
+        data.select(used_cols)
         .filter(
-            (pl.col("Date") >= pl.lit(start_dt)) &
-            (pl.col("Date") <= pl.lit(end_dt))
+            (pl.col("Date") >= pl.lit(start_dt)) & (pl.col("Date") <= pl.lit(end_dt))
         )
         .sort("Date")
         .collect(engine="streaming")
@@ -376,7 +399,9 @@ def make_halfyear_rolling_splits(
 
     while True:
         train_start = anchor
-        train_end = train_start + pd.DateOffset(months=train_months) - pd.Timedelta(days=1)
+        train_end = (
+            train_start + pd.DateOffset(months=train_months) - pd.Timedelta(days=1)
+        )
 
         val_start = train_end + pd.Timedelta(days=1)
         val_end = val_start + pd.DateOffset(months=val_months) - pd.Timedelta(days=1)
@@ -394,11 +419,13 @@ def make_halfyear_rolling_splits(
         test_df = df[(df["Date"] >= test_start) & (df["Date"] <= test_end)].copy()
 
         if len(train_df) > 0 and len(val_df) > 0 and len(test_df) > 0:
-            splits.append({
-                "train_rows": train_df.to_dict("records"),
-                "val_rows": val_df.to_dict("records"),
-                "test_rows": test_df.to_dict("records"),
-            })
+            splits.append(
+                {
+                    "train_rows": train_df.to_dict("records"),
+                    "val_rows": val_df.to_dict("records"),
+                    "test_rows": test_df.to_dict("records"),
+                }
+            )
 
         anchor = anchor + pd.DateOffset(months=test_months)
         if anchor > end_dt:
@@ -462,8 +489,8 @@ def build_loaders_for_split(
 
 if __name__ == "__main__":
     l = LazyHeadlineVectorizer(
-        "prepared_data_2018-01-01_2023-12-31.parquet",
-        n_rows=NEWS_N_ROWS
+        "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet",
+        n_rows=NEWS_N_ROWS,
     )
     l.run()
 
@@ -479,7 +506,9 @@ if __name__ == "__main__":
 
     l.lf = add_next_day_return_target(l.lf)
 
-    stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_list())
+    stocks = sorted(
+        l.lf.select("Stock_symbol").unique().collect().to_series().to_list()
+    )
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -497,21 +526,16 @@ if __name__ == "__main__":
     ).to(device)
 
     trading_dates = (
-        l.lf.select("Date")
-        .unique()
-        .sort("Date")
-        .collect()
-        .to_series()
-        .to_list()
+        l.lf.select("Date").unique().sort("Date").collect().to_series().to_list()
     )
 
     print("Building full graph cache...")
     graph_cache = DailyGraphFeatureCache(
         mdgnn_model=mdgnn_for_cache,
-        nodes_bank_path="nodes_bank.parquet",
-        nodes_stock_path="nodes_stock.parquet",
-        edges_bank_stock_path="edges_bank_stock.parquet",
-        edges_stock_stock_path="edges_stock_stock.parquet",
+        nodes_bank_path="data/graphs/nodes_bank.parquet",
+        nodes_stock_path="data/graphs/nodes_stock.parquet",
+        edges_bank_stock_path="data/graphs/edges_bank_stock.parquet",
+        edges_stock_stock_path="data/graphs/edges_stock_stock.parquet",
         trading_dates=trading_dates,
         device=device,
         hidden_dim=HIDDEN_DIM,
@@ -544,7 +568,11 @@ if __name__ == "__main__":
             window_size=WINDOW_SIZE,
         )
 
-        if len(train_loader.dataset) == 0 or len(val_loader.dataset) == 0 or len(test_loader.dataset) == 0:
+        if (
+            len(train_loader.dataset) == 0
+            or len(val_loader.dataset) == 0
+            or len(test_loader.dataset) == 0
+        ):
             print(f"Split {split_idx} is empty. Skipping.")
             continue
 
@@ -591,7 +619,13 @@ if __name__ == "__main__":
             model.train()
             train_loss = 0.0
 
-            for X_text_batch, X_num_batch, Y_batch, stock_batch, graph_seq_batch in train_loader:
+            for (
+                X_text_batch,
+                X_num_batch,
+                Y_batch,
+                stock_batch,
+                graph_seq_batch,
+            ) in train_loader:
                 X_text_batch = X_text_batch.to(device)
                 X_num_batch = X_num_batch.to(device)
                 Y_batch = Y_batch.to(device)
@@ -616,7 +650,13 @@ if __name__ == "__main__":
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
-                for X_text_val, X_num_val, Y_val, stock_val, graph_seq_val in val_loader:
+                for (
+                    X_text_val,
+                    X_num_val,
+                    Y_val,
+                    stock_val,
+                    graph_seq_val,
+                ) in val_loader:
                     X_text_val = X_text_val.to(device)
                     X_num_val = X_num_val.to(device)
                     Y_val = Y_val.to(device)
@@ -634,7 +674,9 @@ if __name__ == "__main__":
             avg_train_loss = train_loss / max(len(train_loader), 1)
             avg_val_loss = val_loss / max(len(val_loader), 1)
 
-            print(f"Split {split_idx} Epoch {epoch + 1} | Train={avg_train_loss:.6f} | Val={avg_val_loss:.6f}")
+            print(
+                f"Split {split_idx} Epoch {epoch + 1} | Train={avg_train_loss:.6f} | Val={avg_val_loss:.6f}"
+            )
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
@@ -652,7 +694,13 @@ if __name__ == "__main__":
         all_preds = []
 
         with torch.no_grad():
-            for X_text_test, X_num_test, Y_test, stock_test, graph_seq_test in test_loader:
+            for (
+                X_text_test,
+                X_num_test,
+                Y_test,
+                stock_test,
+                graph_seq_test,
+            ) in test_loader:
                 X_text_test = X_text_test.to(device)
                 X_num_test = X_num_test.to(device)
                 Y_test = Y_test.to(device)
@@ -673,4 +721,3 @@ if __name__ == "__main__":
 
         print(f"Split {split_idx} | Test={avg_test_loss:.6f}")
         print(f"Split {split_idx} | Predictions={all_preds}")
-

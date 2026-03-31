@@ -19,6 +19,31 @@ dependencies = [
     "pandas>=3.0.1",
     "gensim>=4.4.0",
     "pyarrow>=23.0.1",
-    # "torch>=2.10.0",
-    "torch @ https://download.pytorch.org/whl/cu121/torch-2.2.0%2Bcu121-cp311-cp311-win_amd64.whl#sha256=d79324159c622243429ec214a86b8613c1d7d46fc4821374d324800f1df6ade1",
+    "torch",
+    "torchvision",
+]
+
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.2"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[project.optional-dependencies]
+rocm = ["torch", "torchvision"]
+cuda = ["torch", "torchvision"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-rocm", marker = "extra == 'rocm' and extra != 'cuda'" },
+    { index = "pytorch-cu124", marker = "extra == 'cuda' and extra != 'rocm'" },
+]
+torchvision = [
+    { index = "pytorch-rocm", marker = "extra == 'rocm' and extra != 'cuda'" },
+    { index = "pytorch-cu124", marker = "extra == 'cuda' and extra != 'rocm'" },
 ]
