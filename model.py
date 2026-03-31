@@ -10,7 +10,16 @@ from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
 
 
+
 # Configuration
+NEWS_N_ROWS = None
+
+ROLLING_START_DATE = "2018-01-01"
+ROLLING_END_DATE = "2023-02-28"
+TRAIN_MONTHS = 6
+VAL_MONTHS = 1
+TEST_MONTHS = 6
+
 HIDDEN_DIM = 128
 GNN_LAYERS = 2
 WINDOW_SIZE = 10
@@ -20,13 +29,6 @@ BATCH_SIZE = 8
 
 FEATURE_COLS = ["open", "high"]
 TARGET_COL = "target_return"
-
-ROLLING_START_DATE = "2018-01-01"
-ROLLING_END_DATE = "2023-02-28"
-
-TRAIN_MONTHS = 6
-VAL_MONTHS = 1
-TEST_MONTHS = 6
 
 
 class DailyGraphFeatureCache:
@@ -45,11 +47,90 @@ class DailyGraphFeatureCache:
         self.hidden_dim = hidden_dim
         self.cache = {}
 
-        nodes_bank_df = pd.read_parquet(nodes_bank_path)
-        nodes_stock_df = pd.read_parquet(nodes_stock_path)
-        edges_bank_stock_df = pd.read_parquet(edges_bank_stock_path)
-        edges_stock_stock_df = pd.read_parquet(edges_stock_stock_path)
 
+        # 1. Determine needed quarters
+        trading_ts = [pd.Timestamp(x) for x in trading_dates]
+        needed_quarters = sorted({
+            (ts.year, ((ts.month - 1) // 3 + 1))
+            for ts in trading_ts
+        })
+
+        quarter_expr = None
+        for y, q in needed_quarters:
+            cond = ((pl.col("year") == y) & (pl.col("quarter") == q))
+            quarter_expr = cond if quarter_expr is None else (quarter_expr | cond)
+
+        if quarter_expr is None:
+            self.sorted_dates = []
+            return
+
+
+        # 2. Read only required node columns
+        stock_cols = [
+            "year", "quarter", "stock_id",
+            "num_holders", "total_institutional_value",
+            "total_institutional_shares", "num_quarters_held"
+        ]
+        bank_cols = [
+            "year", "quarter", "bank_id",
+            "num_stocks_held", "total_aum_value",
+            "avg_position_size", "num_quarters_active"
+        ]
+
+        print("Loading stock node data...")
+        nodes_stock_df = (
+            pl.scan_parquet(nodes_stock_path)
+            .select(stock_cols)
+            .filter(quarter_expr)
+            .collect(engine="streaming")
+            .to_pandas()
+        )
+
+        print("Loading bank node data...")
+        nodes_bank_df = (
+            pl.scan_parquet(nodes_bank_path)
+            .select(bank_cols)
+            .filter(quarter_expr)
+            .collect(engine="streaming")
+            .to_pandas()
+        )
+
+        if len(nodes_stock_df) == 0 or len(nodes_bank_df) == 0:
+            self.sorted_dates = []
+            return
+
+
+        # 3. Read only required edge columns
+        edge_bs_cols = [
+            "year", "quarter", "bank_id", "stock_id",
+            "total_value", "total_shares",
+            "voting_sole", "voting_shared", "voting_none"
+        ]
+        edge_ss_cols = [
+            "year", "quarter", "stock_id_1", "stock_id_2", "co_holder_count"
+        ]
+
+        print("Loading bank-stock edge data...")
+        edges_bank_stock_df = (
+            pl.scan_parquet(edges_bank_stock_path)
+            .select(edge_bs_cols)
+            .filter(quarter_expr)
+            .collect(engine="streaming")
+            .to_pandas()
+        )
+
+        print("Loading stock-stock edge data...")
+        edges_stock_stock_df = (
+            pl.scan_parquet(edges_stock_stock_path)
+            .select(edge_ss_cols)
+            .filter(quarter_expr)
+            .collect(engine="streaming")
+            .to_pandas()
+        )
+
+
+        # 4. Build quarter snapshots
+        print("Building quarter snapshots...")
         quarter_snapshots = build_quarter_snapshots(
             nodes_bank_df=nodes_bank_df,
             nodes_stock_df=nodes_stock_df,
@@ -57,6 +138,7 @@ class DailyGraphFeatureCache:
             edges_stock_stock_df=edges_stock_stock_df,
         )
 
+        print("Expanding quarter snapshots to daily snapshots...")
         daily_snapshots = expand_quarter_snapshots_to_daily(
             trading_dates=trading_dates,
             quarter_snapshots=quarter_snapshots,
@@ -65,10 +147,14 @@ class DailyGraphFeatureCache:
         mdgnn_model = mdgnn_model.to(device)
         mdgnn_model.eval()
 
+        print("Encoding graph snapshots...")
         with torch.no_grad():
             for dt, snap in daily_snapshots.items():
                 stock_feat = snap["stock_feat"].to(device)
-                bank_feat = snap["bank_feat"].to(device) if snap["bank_feat"] is not None else None
+
+                bank_feat = snap["bank_feat"]
+                if bank_feat is not None:
+                    bank_feat = bank_feat.to(device)
 
                 industry_feat = snap["industry_feat"]
                 if industry_feat is not None:
@@ -253,15 +339,40 @@ def make_halfyear_rolling_splits(
     val_months: int = 1,
     test_months: int = 6,
 ):
-    df = data.sort("Date").collect(engine="streaming").to_pandas()
+    schema_names = data.collect_schema().names()
+    needed_cols = [
+        "Date",
+        "Stock_symbol",
+        "embedded_headline",
+        "open",
+        "high",
+        "target_return",
+    ]
+    used_cols = [c for c in needed_cols if c in schema_names]
+
+    start_dt = pd.Timestamp(start_date)
+    end_dt = pd.Timestamp(end_date)
+
+    print("Building rolling splits...")
+    df = (
+        data
+        .select(used_cols)
+        .filter(
+            (pl.col("Date") >= pl.lit(start_dt)) &
+            (pl.col("Date") <= pl.lit(end_dt))
+        )
+        .sort("Date")
+        .collect(engine="streaming")
+        .to_pandas()
+    )
+
+    if len(df) == 0:
+        return []
+
     df["Date"] = pd.to_datetime(df["Date"])
-    df = df[
-        (df["Date"] >= pd.Timestamp(start_date))
-        & (df["Date"] <= pd.Timestamp(end_date))
-    ].copy()
 
     splits = []
-    anchor = pd.Timestamp(start_date)
+    anchor = start_dt
 
     while True:
         train_start = anchor
@@ -273,10 +384,10 @@ def make_halfyear_rolling_splits(
         test_start = val_end + pd.Timedelta(days=1)
         test_end = test_start + pd.DateOffset(months=test_months) - pd.Timedelta(days=1)
 
-        if val_start > pd.Timestamp(end_date) or test_start > pd.Timestamp(end_date):
+        if val_start > end_dt or test_start > end_dt:
             break
 
-        test_end = min(test_end, pd.Timestamp(end_date))
+        test_end = min(test_end, end_dt)
 
         train_df = df[(df["Date"] >= train_start) & (df["Date"] <= train_end)].copy()
         val_df = df[(df["Date"] >= val_start) & (df["Date"] <= val_end)].copy()
@@ -290,7 +401,7 @@ def make_halfyear_rolling_splits(
             })
 
         anchor = anchor + pd.DateOffset(months=test_months)
-        if anchor > pd.Timestamp(end_date):
+        if anchor > end_dt:
             break
 
     return splits
@@ -314,6 +425,7 @@ def build_loaders_for_split(
         feature_cols=feature_cols,
         target_col=target_col,
         max_headline_len=max_headline_len,
+        graph_hidden_dim=HIDDEN_DIM,
         window_size=window_size,
     )
 
@@ -325,6 +437,7 @@ def build_loaders_for_split(
         feature_cols=feature_cols,
         target_col=target_col,
         max_headline_len=max_headline_len,
+        graph_hidden_dim=HIDDEN_DIM,
         window_size=window_size,
     )
 
@@ -336,6 +449,7 @@ def build_loaders_for_split(
         feature_cols=feature_cols,
         target_col=target_col,
         max_headline_len=max_headline_len,
+        graph_hidden_dim=HIDDEN_DIM,
         window_size=window_size,
     )
 
@@ -347,7 +461,10 @@ def build_loaders_for_split(
 
 
 if __name__ == "__main__":
-    l = LazyHeadlineVectorizer("prepared_data_2018-01-01_2023-12-31.parquet", n_rows=None)
+    l = LazyHeadlineVectorizer(
+        "prepared_data_2018-01-01_2023-12-31.parquet",
+        n_rows=NEWS_N_ROWS
+    )
     l.run()
 
     drop_cols = [
@@ -388,6 +505,7 @@ if __name__ == "__main__":
         .to_list()
     )
 
+    print("Building full graph cache...")
     graph_cache = DailyGraphFeatureCache(
         mdgnn_model=mdgnn_for_cache,
         nodes_bank_path="nodes_bank.parquet",
@@ -408,7 +526,13 @@ if __name__ == "__main__":
         test_months=TEST_MONTHS,
     )
 
+    if len(rolling_splits) == 0:
+        print("No valid rolling splits were created.")
+        raise SystemExit
+
     for split_idx, split_info in enumerate(rolling_splits, start=1):
+        print(f"Starting split {split_idx}...")
+
         train_loader, val_loader, test_loader = build_loaders_for_split(
             split_dict=split_info,
             stock2id=stock2id,
@@ -421,6 +545,7 @@ if __name__ == "__main__":
         )
 
         if len(train_loader.dataset) == 0 or len(val_loader.dataset) == 0 or len(test_loader.dataset) == 0:
+            print(f"Split {split_idx} is empty. Skipping.")
             continue
 
         lstm_encoder = LSTM_Encoder(
@@ -548,7 +673,4 @@ if __name__ == "__main__":
 
         print(f"Split {split_idx} | Test={avg_test_loss:.6f}")
         print(f"Split {split_idx} | Predictions={all_preds}")
-
-
-
 
