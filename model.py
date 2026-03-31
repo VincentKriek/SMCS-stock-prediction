@@ -28,7 +28,7 @@ PATIENCE = 20
 BATCH_SIZE = 8
 
 # For lstm:
-FEATURE_COLS = ['Date', 'open', 'high', 'low', 'close', 'adj close', 'volume', 'Stock_symbol', 'row_index', 'Article_title', 'summary', 'tokenized_headline', 'headline_len', 'embedded_headline']
+FEATURE_COLS = ['open', 'high', 'low', 'close', 'adj close', 'volume', 'Stock_symbol', 'embedded_headline']
 
 TARGET_COL = "target_return"
 
