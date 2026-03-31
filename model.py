@@ -13,7 +13,7 @@ from sklearn.metrics import r2_score
 
 
 # Configuration
-NEWS_N_ROWS = 1000
+NEWS_N_ROWS = None
 
 ROLLING_START_DATE = "2018-01-01"
 ROLLING_END_DATE = "2023-02-28"
@@ -627,7 +627,7 @@ if __name__ == "__main__":
 
         best_val_loss = float("inf")
         counter = 0
-        save_path = f"best_fusion_model_split_{split_idx}.pt"
+        save_path = f"data/model/best_fusion_model_split_{split_idx}.pt"
 
         train_losses = []
         val_losses = []
@@ -713,7 +713,7 @@ if __name__ == "__main__":
             }
         )
 
-        loss_df.to_csv(f"losses_split_{split_idx}.csv", index=False)
+        loss_df.to_csv(f"data/model/losses_split_{split_idx}.csv", index=False)
 
         # region testing
         model.load_state_dict(torch.load(save_path, map_location=device))
@@ -753,8 +753,8 @@ if __name__ == "__main__":
         r2 = r2_score(all_targets, all_preds)
 
         print(f"Split {split_idx} | Test={avg_test_loss:.6f}")
-        print(f"Split {split_idx} | R2={r2_score:.6f}")
+        print(f"Split {split_idx} | R2={r2:.6f}")
         print(f"Split {split_idx} | Predictions={all_preds}")
 
         df = pd.DataFrame({"prediction": all_preds, "target": all_targets})
-        df.to_csv(f"predictions_split_{split_idx}.csv", index=False)
+        df.to_csv(f"data/model/predictions_split_{split_idx}.csv", index=False)
