@@ -35,7 +35,6 @@ FEATURE_COLS = [
     "close",
     "adj close",
     "volume",
-    "Stock_symbol",
     "embedded_headline",
 ]
 
