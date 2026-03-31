@@ -8,10 +8,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
+from tqdm import tqdm
 
 
 # Configuration
-NEWS_N_ROWS = None
+NEWS_N_ROWS = 1000
 
 ROLLING_START_DATE = "2018-01-01"
 ROLLING_END_DATE = "2023-02-28"
@@ -26,7 +27,18 @@ MAX_EPOCHS = 500
 PATIENCE = 20
 BATCH_SIZE = 8
 
-FEATURE_COLS = ["open", "high"]
+# For lstm:
+FEATURE_COLS = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj close",
+    "volume",
+    "Stock_symbol",
+    "embedded_headline",
+]
+
 TARGET_COL = "target_return"
 
 
@@ -161,7 +173,11 @@ class DailyGraphFeatureCache:
 
         print("Encoding graph snapshots...")
         with torch.no_grad():
-            for dt, snap in daily_snapshots.items():
+            for dt, snap in tqdm(
+                daily_snapshots.items(),
+                desc="Processing days",
+                total=len(daily_snapshots),
+            ):
                 stock_feat = snap["stock_feat"].to(device)
 
                 bank_feat = snap["bank_feat"]
@@ -505,6 +521,8 @@ if __name__ == "__main__":
         l.lf = l.lf.drop(*existing_drop_cols)
 
     l.lf = add_next_day_return_target(l.lf)
+    print("=== Added next day return column ===")
+    print(l.lf.collect_schema().keys())
 
     stocks = sorted(
         l.lf.select("Stock_symbol").unique().collect().to_series().to_list()
@@ -512,6 +530,7 @@ if __name__ == "__main__":
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"DEVICE: {device}")
 
     mdgnn_for_cache = MDGNN(
         stock_in_dim=4,
@@ -615,7 +634,11 @@ if __name__ == "__main__":
         counter = 0
         save_path = f"best_fusion_model_split_{split_idx}.pt"
 
+        train_losses = []
+        val_losses = []
+
         for epoch in range(MAX_EPOCHS):
+            # region training / validating
             model.train()
             train_loss = 0.0
 
@@ -687,11 +710,23 @@ if __name__ == "__main__":
                 if counter >= PATIENCE:
                     break
 
+        loss_df = pd.DataFrame(
+            {
+                "epoch": list(range(1, len(train_losses) + 1)),
+                "train_loss": train_losses,
+                "val_loss": val_losses,
+            }
+        )
+
+        loss_df.to_csv(f"losses_split_{split_idx}.csv", index=False)
+
+        # region testing
         model.load_state_dict(torch.load(save_path, map_location=device))
         model.eval()
 
         test_loss = 0.0
         all_preds = []
+        all_targets = []
 
         with torch.no_grad():
             for (
@@ -716,6 +751,7 @@ if __name__ == "__main__":
 
                 test_loss += criterion(preds, Y_test).item()
                 all_preds.extend(preds.detach().cpu().tolist())
+                all_targets.extend(Y_test.detach().cpu().tolist())
 
         avg_test_loss = test_loss / max(len(test_loader), 1)
 
