@@ -596,7 +596,11 @@ if __name__ == "__main__":
         counter = 0
         save_path = f"best_fusion_model_split_{split_idx}.pt"
 
+        train_losses = []
+        val_losses = []
+
         for epoch in range(MAX_EPOCHS):
+            # region training / validating
             model.train()
             train_loss = 0.0
 
@@ -645,6 +649,10 @@ if __name__ == "__main__":
             avg_train_loss = train_loss / max(len(train_loader), 1)
             avg_val_loss = val_loss / max(len(val_loader), 1)
 
+            # store losses for in a csv later
+            train_losses.append(avg_train_loss)
+            val_losses.append(avg_val_loss)
+
             tqdm.write(f"Split {split_idx} Epoch {epoch + 1} | Train={avg_train_loss:.6f} | Val={avg_val_loss:.6f}")
 
             if avg_val_loss < best_val_loss:
@@ -656,11 +664,21 @@ if __name__ == "__main__":
                 if counter >= PATIENCE:
                     break
 
+        loss_df = pd.DataFrame({
+            "epoch": list(range(1, len(train_losses) + 1)),
+            "train_loss": train_losses,
+            "val_loss": val_losses
+        })
+
+        loss_df.to_csv(f"losses_split_{split_idx}.csv", index=False)
+
+        # region testing
         model.load_state_dict(torch.load(save_path, map_location=device))
         model.eval()
 
         test_loss = 0.0
         all_preds = []
+        all_targets = []
 
         with torch.no_grad():
             for X_text_test, X_num_test, Y_test, stock_test, graph_seq_test in test_loader:
@@ -679,9 +697,16 @@ if __name__ == "__main__":
 
                 test_loss += criterion(preds, Y_test).item()
                 all_preds.extend(preds.detach().cpu().tolist())
+                all_targets.extend(Y_test.detach().cpu().tolist())
 
         avg_test_loss = test_loss / max(len(test_loader), 1)
 
         print(f"Split {split_idx} | Test={avg_test_loss:.6f}")
         print(f"Split {split_idx} | Predictions={all_preds}")
+
+        df = pd.DataFrame({
+            "prediction": all_preds,
+            "target": all_targets
+        })
+        df.to_csv(f"predictions_split_{split_idx}.csv", index=False)
 
