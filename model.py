@@ -8,11 +8,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
-
+from tqdm import tqdm
 
 
 # Configuration
-NEWS_N_ROWS = None
+NEWS_N_ROWS = 1000
 
 ROLLING_START_DATE = "2018-01-01"
 ROLLING_END_DATE = "2023-02-28"
@@ -27,7 +27,9 @@ MAX_EPOCHS = 500
 PATIENCE = 20
 BATCH_SIZE = 8
 
-FEATURE_COLS = ["open", "high"]
+# For lstm:
+FEATURE_COLS = ['Date', 'open', 'high', 'low', 'close', 'adj close', 'volume', 'Stock_symbol', 'row_index', 'Article_title', 'summary', 'tokenized_headline', 'headline_len', 'embedded_headline']
+
 TARGET_COL = "target_return"
 
 
@@ -149,7 +151,11 @@ class DailyGraphFeatureCache:
 
         print("Encoding graph snapshots...")
         with torch.no_grad():
-            for dt, snap in daily_snapshots.items():
+            for dt, snap in tqdm(
+                daily_snapshots.items(),
+                desc="Processing days",
+                total=len(daily_snapshots)
+            ):
                 stock_feat = snap["stock_feat"].to(device)
 
                 bank_feat = snap["bank_feat"]
@@ -478,11 +484,14 @@ if __name__ == "__main__":
         l.lf = l.lf.drop(*existing_drop_cols)
 
     l.lf = add_next_day_return_target(l.lf)
+    print("=== Added next day return column ===")
+    print(l.lf.collect_schema().keys())
 
     stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_list())
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"DEVICE: {device}")
 
     mdgnn_for_cache = MDGNN(
         stock_in_dim=4,
@@ -591,7 +600,9 @@ if __name__ == "__main__":
             model.train()
             train_loss = 0.0
 
-            for X_text_batch, X_num_batch, Y_batch, stock_batch, graph_seq_batch in train_loader:
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{MAX_EPOCHS}")
+
+            for X_text_batch, X_num_batch, Y_batch, stock_batch, graph_seq_batch in pbar:
                 X_text_batch = X_text_batch.to(device)
                 X_num_batch = X_num_batch.to(device)
                 Y_batch = Y_batch.to(device)
@@ -634,7 +645,7 @@ if __name__ == "__main__":
             avg_train_loss = train_loss / max(len(train_loader), 1)
             avg_val_loss = val_loss / max(len(val_loader), 1)
 
-            print(f"Split {split_idx} Epoch {epoch + 1} | Train={avg_train_loss:.6f} | Val={avg_val_loss:.6f}")
+            tqdm.write(f"Split {split_idx} Epoch {epoch + 1} | Train={avg_train_loss:.6f} | Val={avg_val_loss:.6f}")
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
