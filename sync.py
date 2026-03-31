@@ -1,62 +1,46 @@
-import subprocess
 import shutil
-import os
-from pathlib import Path
-
-LOCKFILES = {
-    "cuda": "uv-cuda.lock",
-    "rocm": "uv-rocm.lock",
-    "cpu": "uv-cpu.lock",
-}
-
-
-def run(cmd: list[str], env=None):
-    print(f"👉 {' '.join(cmd)}")
-    subprocess.run(cmd, check=True, env=env)
+import subprocess
+import sys
 
 
 def detect_backend() -> str:
     if shutil.which("nvidia-smi"):
-        return "cuda"
+        return "cu121"
+    # Check for ROCm (AMD)
     if shutil.which("rocm-smi") or shutil.which("rocminfo"):
-        return "rocm"
+        return "rocm60"
     return "cpu"
-
-
-def ensure_lockfile(backend: str) -> Path:
-    lockfile = Path(LOCKFILES[backend])
-    if lockfile.exists():
-        return lockfile
-
-    print(f"🔒 Creating lockfile: {lockfile}")
-
-    env = os.environ.copy()
-    if backend != "cpu":
-        env["UV_EXTRAS"] = backend
-    else:
-        env["UV_EXTRAS"] = ""
-
-    # Run lock (default uv.lock)
-    run(["uv", "lock"], env=env)
-
-    # Rename uv.lock to backend-specific lockfile
-    default_lock = Path("uv.lock")
-    if default_lock.exists():
-        default_lock.rename(lockfile)
-
-    return lockfile
 
 
 def main():
     backend = detect_backend()
-    print(f"🔍 Detected backend: {backend}")
+    print(f"🔍 Hardware detected: {backend.upper()}")
 
-    ensure_lockfile(backend)
+    # We run uv sync with the specific extra
+    cmd = ["uv", "sync", "--extra", backend]
 
-    if backend == "cpu":
-        run(["uv", "sync"])
-    else:
-        run(["uv", "sync", "--extra", backend])
+    try:
+        print(f"🚀 Running: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print("✅ Environment synchronized!")
+
+        # Verification
+        # NOTE: We MUST use --extra here too, or uv run will hide torch
+        print("\n🧪 Verifying...")
+        subprocess.run(
+            [
+                "uv",
+                "run",
+                "python",
+                "-c",
+                "import torch; print(f'✅ Found Torch {torch.__version__} | CUDA/ROCm Available: {torch.cuda.is_available()}')",
+            ],
+            check=True,
+        )
+
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
