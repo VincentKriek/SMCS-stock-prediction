@@ -54,9 +54,9 @@ def main():
     ensure_lockfile(backend)
 
     if backend == "cpu":
-        run(["uv", "sync", "--locked"])
+        run(["uv", "sync"])
     else:
-        run(["uv", "sync", "--extra", backend, "--locked"])
+        run(["uv", "sync", "--extra", backend])
 
 
 if __name__ == "__main__":
