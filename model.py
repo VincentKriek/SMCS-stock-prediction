@@ -561,6 +561,14 @@ if __name__ == "__main__":
         hidden_dim=HIDDEN_DIM,
     )
 
+    # Save cache
+    torch.save(graph_cache.cache, "graph_cache.pt")
+
+    # Load cache later
+    loaded_cache = torch.load("graph_cache.pt")
+    graph_cache.cache = loaded_cache
+    graph_cache.sorted_dates = sorted(loaded_cache.keys())
+
     rolling_splits = make_halfyear_rolling_splits(
         data=l.lf,
         start_date=ROLLING_START_DATE,
