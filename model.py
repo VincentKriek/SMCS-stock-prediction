@@ -521,7 +521,7 @@ if __name__ == "__main__":
     )
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 
-    cache_device  = torch.device("cpu")
+    cache_device = torch.device("cpu")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"CACHE DEVICE: {cache_device}")
@@ -753,10 +753,8 @@ if __name__ == "__main__":
         r2 = r2_score(all_targets, all_preds)
 
         print(f"Split {split_idx} | Test={avg_test_loss:.6f}")
+        print(f"Split {split_idx} | R2={r2_score:.6f}")
         print(f"Split {split_idx} | Predictions={all_preds}")
 
-        df = pd.DataFrame({
-            "prediction": all_preds,
-            "target": all_targets
-        })
+        df = pd.DataFrame({"prediction": all_preds, "target": all_targets})
         df.to_csv(f"predictions_split_{split_idx}.csv", index=False)
