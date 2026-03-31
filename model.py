@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
 from tqdm import tqdm
 from sklearn.metrics import r2_score
+import os
 
 
 # Configuration
@@ -45,19 +46,23 @@ TARGET_COL = "target_return"
 class DailyGraphFeatureCache:
     def __init__(
         self,
-        mdgnn_model: MDGNN,
-        nodes_bank_path: str,
-        nodes_stock_path: str,
-        edges_bank_stock_path: str,
-        edges_stock_stock_path: str,
-        trading_dates,
         device: torch.device,
         hidden_dim: int = 128,
     ):
         self.device = device
         self.hidden_dim = hidden_dim
         self.cache = {}
+        self.sorted_dates = []
 
+    def build_cache(
+        self,
+        mdgnn_model: MDGNN,
+        nodes_bank_path: str,
+        nodes_stock_path: str,
+        edges_bank_stock_path: str,
+        edges_stock_stock_path: str,
+        trading_dates,
+    ):
         # 1. Determine needed quarters
         trading_ts = [pd.Timestamp(x) for x in trading_dates]
         needed_quarters = sorted(
@@ -209,6 +214,10 @@ class DailyGraphFeatureCache:
                 pooled = stock_emb.mean(dim=0).detach().cpu()
                 self.cache[pd.Timestamp(dt).normalize()] = pooled
 
+        self.sorted_dates = sorted(self.cache.keys())
+
+    def load_from_file(self, path):
+        self.cache = torch.load(path, map_location=self.device)
         self.sorted_dates = sorted(self.cache.keys())
 
     def lookup(self, date_value):
@@ -535,6 +544,8 @@ if __name__ == "__main__":
     print(f"CACHE DEVICE: {cache_device}")
     print(f"DEVICE: {device}")
 
+    graph_cache = DailyGraphFeatureCache(device=cache_device, hidden_dim=HIDDEN_DIM)
+
     mdgnn_for_cache = MDGNN(
         stock_in_dim=4,
         bank_in_dim=4,
@@ -551,25 +562,22 @@ if __name__ == "__main__":
         lhv.lf.select("Date").unique().sort("Date").collect().to_series().to_list()
     )
 
-    print("Building full graph cache...")
-    graph_cache = DailyGraphFeatureCache(
-        mdgnn_model=mdgnn_for_cache,
-        nodes_bank_path="data/graphs/nodes_bank.parquet",
-        nodes_stock_path="data/graphs/nodes_stock.parquet",
-        edges_bank_stock_path="data/graphs/edges_bank_stock.parquet",
-        edges_stock_stock_path="data/graphs/edges_stock_stock.parquet",
-        trading_dates=trading_dates,
-        device=cache_device,
-        hidden_dim=HIDDEN_DIM,
-    )
+    if not os.path.exists("data/model/graph_cache.pt"):
+        print("Building full graph cache...")
+        graph_cache.build_cache(
+            mdgnn_model=mdgnn_for_cache,
+            nodes_bank_path="data/graphs/nodes_bank.parquet",
+            nodes_stock_path="data/graphs/nodes_stock.parquet",
+            edges_bank_stock_path="data/graphs/edges_bank_stock.parquet",
+            edges_stock_stock_path="data/graphs/edges_stock_stock.parquet",
+            trading_dates=trading_dates,
+        )
 
-    # Save cache
-    torch.save(graph_cache.cache, "graph_cache.pt")
-
-    # Load cache later
-    loaded_cache = torch.load("graph_cache.pt")
-    graph_cache.cache = loaded_cache
-    graph_cache.sorted_dates = sorted(loaded_cache.keys())
+        # Save cache
+        torch.save(graph_cache.cache, "data/model/graph_cache.pt")
+    else:
+        print("load cache from file")
+        graph_cache.load_from_file("data/model/graph_cache.pt")
 
     rolling_splits = make_halfyear_rolling_splits(
         data=lhv.lf,
