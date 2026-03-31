@@ -758,3 +758,9 @@ if __name__ == "__main__":
 
         print(f"Split {split_idx} | Test={avg_test_loss:.6f}")
         print(f"Split {split_idx} | Predictions={all_preds}")
+
+        df = pd.DataFrame({
+            "prediction": all_preds,
+            "target": all_targets
+        })
+        df.to_csv(f"predictions_split_{split_idx}.csv", index=False)
