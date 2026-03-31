@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
 from tqdm import tqdm
+from sklearn.metrics import r2_score
 
 
 # Configuration
@@ -28,14 +29,7 @@ PATIENCE = 20
 BATCH_SIZE = 8
 
 # For lstm:
-FEATURE_COLS = [
-    "open",
-    "high",
-    "low",
-    "close",
-    "adj close",
-    "volume"
-]
+FEATURE_COLS = ["open", "high", "low", "close", "adj close", "volume"]
 
 TARGET_COL = "target_return"
 
@@ -509,7 +503,7 @@ if __name__ == "__main__":
     l.run()
 
     drop_cols = [
-        "Sentiment_llm_mean_filled",
+        # "Sentiment_llm_mean_filled",
         "Sentiment_llm_median_filled",
         "Sentiment_llm_mode_filled",
     ]
@@ -754,6 +748,8 @@ if __name__ == "__main__":
                 all_targets.extend(Y_test.detach().cpu().tolist())
 
         avg_test_loss = test_loss / max(len(test_loader), 1)
+
+        r2 = r2_score(all_targets, all_preds)
 
         print(f"Split {split_idx} | Test={avg_test_loss:.6f}")
         print(f"Split {split_idx} | Predictions={all_preds}")
