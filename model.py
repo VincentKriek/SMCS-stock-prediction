@@ -29,7 +29,15 @@ PATIENCE = 20
 BATCH_SIZE = 8
 
 # For lstm:
-FEATURE_COLS = ["open", "high", "low", "close", "adj close", "volume"]
+FEATURE_COLS = [
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj close",
+    "volume",
+    "Sentiment_llm_mean_filled",
+]
 
 TARGET_COL = "target_return"
 
@@ -496,28 +504,28 @@ def build_loaders_for_split(
 
 
 if __name__ == "__main__":
-    l = LazyHeadlineVectorizer(
+    lhv = LazyHeadlineVectorizer(
         "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet",
         n_rows=NEWS_N_ROWS,
     )
-    l.run()
+    lhv.run()
 
     drop_cols = [
         # "Sentiment_llm_mean_filled",
         "Sentiment_llm_median_filled",
         "Sentiment_llm_mode_filled",
     ]
-    schema_names = l.lf.collect_schema().names()
+    schema_names = lhv.lf.collect_schema().names()
     existing_drop_cols = [c for c in drop_cols if c in schema_names]
     if existing_drop_cols:
-        l.lf = l.lf.drop(*existing_drop_cols)
+        lhv.lf = lhv.lf.drop(*existing_drop_cols)
 
-    l.lf = add_next_day_return_target(l.lf)
+    lhv.lf = add_next_day_return_target(lhv.lf)
     print("=== Added next day return column ===")
-    print(l.lf.collect_schema().keys())
+    print(lhv.lf.collect_schema().keys())
 
     stocks = sorted(
-        l.lf.select("Stock_symbol").unique().collect().to_series().to_list()
+        lhv.lf.select("Stock_symbol").unique().collect().to_series().to_list()
     )
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
 
@@ -540,7 +548,7 @@ if __name__ == "__main__":
     ).to(cache_device)
 
     trading_dates = (
-        l.lf.select("Date").unique().sort("Date").collect().to_series().to_list()
+        lhv.lf.select("Date").unique().sort("Date").collect().to_series().to_list()
     )
 
     print("Building full graph cache...")
@@ -556,7 +564,7 @@ if __name__ == "__main__":
     )
 
     rolling_splits = make_halfyear_rolling_splits(
-        data=l.lf,
+        data=lhv.lf,
         start_date=ROLLING_START_DATE,
         end_date=ROLLING_END_DATE,
         train_months=TRAIN_MONTHS,
@@ -576,7 +584,7 @@ if __name__ == "__main__":
             stock2id=stock2id,
             graph_cache=graph_cache,
             batch_size=BATCH_SIZE,
-            max_headline_len=l.max_headline_len,
+            max_headline_len=lhv.max_headline_len,
             feature_cols=FEATURE_COLS,
             target_col=TARGET_COL,
             window_size=WINDOW_SIZE,
@@ -591,10 +599,10 @@ if __name__ == "__main__":
             continue
 
         lstm_encoder = LSTM_Encoder(
-            vocab_size=len(l.word2id),
-            embedding_dim=l.vector_size,
+            vocab_size=len(lhv.word2id),
+            embedding_dim=lhv.vector_size,
             hidden_dim=HIDDEN_DIM,
-            embedding_matrix=l.embedding_matrix,
+            embedding_matrix=lhv.embedding_matrix,
             num_stocks=len(stocks),
             stock_emb_dim=HIDDEN_DIM,
             layer_dim=1,
