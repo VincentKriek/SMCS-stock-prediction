@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
 from tqdm import tqdm
+import os
 
 
 # Configuration
@@ -51,10 +52,18 @@ class DailyGraphFeatureCache:
         trading_dates,
         device: torch.device,
         hidden_dim: int = 128,
+        load_cache: bool = False
     ):
         self.device = device
         self.hidden_dim = hidden_dim
         self.cache = {}
+
+        if load_cache:
+            print("Using loaded graph_cache")
+            graph_cache = torch.load(cache_path)
+            self.cache = graph_cache
+            self.sorted_dates = sorted(self.cache.keys())
+            return
 
         # 1. Determine needed quarters
         trading_ts = [pd.Timestamp(x) for x in trading_dates]
@@ -208,6 +217,7 @@ class DailyGraphFeatureCache:
                 self.cache[pd.Timestamp(dt).normalize()] = pooled
 
         self.sorted_dates = sorted(self.cache.keys())
+        torch.save(graph_cache.cache, cache_path) # Save after creating a new graph_cache
 
     def lookup(self, date_value):
         dt = pd.Timestamp(date_value).normalize()
@@ -348,11 +358,17 @@ class LSTM_MDGNN_Fusion(nn.Module):
     def forward(self, text_ids, numeric_feats, stock_ids, graph_seq):
         text_repr = self.lstm_encoder(text_ids, stock_ids)
         num_repr = self.numeric_proj(numeric_feats)
+        tqdm.write(f"Shapes:")
+        tqdm.write(f"lstm-out: {text_repr.shape}")
+        tqdm.write(f"num-repr: {num_repr.shape}")
 
         _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
             graph_seq, return_attention=True
         )
+        tqdm.write(f"graph-repr: {graph_repr.shape}")
+
         graph_repr = self.graph_proj(graph_repr)
+        tqdm.write(f"graph-repr (POST-PROJECTION): {graph_repr.shape}")
 
         fused = torch.cat([text_repr, num_repr, graph_repr], dim=1)
         out = self.fusion_head(fused).squeeze(-1)
@@ -550,6 +566,8 @@ if __name__ == "__main__":
     )
 
     print("Building full graph cache...")
+    cache_path = "graph_cache.pt"
+
     graph_cache = DailyGraphFeatureCache(
         mdgnn_model=mdgnn_for_cache,
         nodes_bank_path="data/graphs/nodes_bank.parquet",
@@ -559,15 +577,8 @@ if __name__ == "__main__":
         trading_dates=trading_dates,
         device=cache_device,
         hidden_dim=HIDDEN_DIM,
+        load_cache=os.path.exists(cache_path) # determine to use existing or make a new graph + save it
     )
-
-    # Save cache
-    torch.save(graph_cache.cache, "graph_cache.pt")
-
-    # Load cache later
-    loaded_cache = torch.load("graph_cache.pt")
-    graph_cache.cache = loaded_cache
-    graph_cache.sorted_dates = sorted(loaded_cache.keys())
 
     rolling_splits = make_halfyear_rolling_splits(
         data=l.lf,
@@ -582,7 +593,7 @@ if __name__ == "__main__":
         print("No valid rolling splits were created.")
         raise SystemExit
 
-    for split_idx, split_info in enumerate(rolling_splits, start=1):
+    for split_idx, split_info in enumerate([rolling_splits[0]], start=1): # TODO: Note [0]
         print(f"Starting split {split_idx}...")
 
         train_loader, val_loader, test_loader = build_loaders_for_split(
@@ -678,6 +689,9 @@ if __name__ == "__main__":
                 optimizer.step()
 
                 train_loss += loss.item()
+
+                break
+            break
 
             model.eval()
             val_loss = 0.0
