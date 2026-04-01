@@ -361,16 +361,17 @@ class LSTM_MDGNN_Fusion(nn.Module):
         tqdm.write(f"Shapes:")
         tqdm.write(f"lstm-out: {text_repr.shape}")
         tqdm.write(f"num-repr: {num_repr.shape}")
+        tqdm.write(f"graphseq: {graph_seq.shape}") # shape: (batch_size, 10?, HIDDEN_DIM)
 
         _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
-            graph_seq, return_attention=True
-        )
+            graph_seq, return_attention=True, lstm_feature=text_repr
+        ) # TODO: Fix this, make it a chain, not a V-structure
         tqdm.write(f"graph-repr: {graph_repr.shape}")
 
         graph_repr = self.graph_proj(graph_repr)
         tqdm.write(f"graph-repr (POST-PROJECTION): {graph_repr.shape}")
 
-        fused = torch.cat([text_repr, num_repr, graph_repr], dim=1)
+        fused = torch.cat([text_repr, num_repr, graph_repr], dim=1) # TODO: Fix this, make it a chain, not a V-structure
         out = self.fusion_head(fused).squeeze(-1)
         return out
 
@@ -669,6 +670,7 @@ if __name__ == "__main__":
                 stock_batch,
                 graph_seq_batch,
             ) in train_loader:
+                tqdm.write(str(X_text_batch))
                 X_text_batch = X_text_batch.to(device)
                 X_num_batch = X_num_batch.to(device)
                 Y_batch = Y_batch.to(device)
@@ -732,7 +734,8 @@ if __name__ == "__main__":
                 counter += 1
                 if counter >= PATIENCE:
                     break
-
+                
+        break
         loss_df = pd.DataFrame(
             {
                 "epoch": list(range(1, len(train_losses) + 1)),
