@@ -13,7 +13,7 @@ import torch.optim as optim
 
 
 # Configuration
-NEWS_N_ROWS = None
+NEWS_N_ROWS = 1000
 
 ROLLING_START_DATE = "2018-01-01"
 ROLLING_END_DATE = "2023-02-28"
@@ -750,8 +750,9 @@ if __name__ == "__main__":
     print(f"Using numeric features: {NUMERIC_FEATURES}")
     print(f"Using ordered graph split files: {GRAPH_SPLIT_FILES}")
 
+    path = "../../data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
     lhv = LazyHeadlineVectorizer(
-        "prepared_data_2018-01-01_2023-12-31.parquet",
+        path,
         n_rows=NEWS_N_ROWS,
     )
     lhv.run()
