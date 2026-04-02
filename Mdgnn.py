@@ -343,16 +343,20 @@ class MDGNN(nn.Module):
             dropout=dropout
         )
 
+        # TODO: Auto-adjust dim. Use 2*hidden dim if use LSTM
+        incl_lstm_dim = 2 * hidden_dim
+
         self.temporal_layer = TemporalExtractionLayer(
-            hidden_dim=hidden_dim,
+            hidden_dim=incl_lstm_dim,
             num_heads=num_heads,
             ff_dim=ff_dim,
             dropout=dropout,
             alibi_slope=alibi_slope
         )
 
+        # TODO: Auto-adjust dim. Use 2*hidden dim if use LSTM
         self.return_head = PredictionHead(
-            hidden_dim=hidden_dim,
+            hidden_dim=incl_lstm_dim,
             dropout=dropout
         )
 
@@ -366,18 +370,19 @@ class MDGNN(nn.Module):
         return self.snapshot_encoder(stock_feat, bank_feat, industry_feat, edges)
 
     def forward_from_sequence(self, graph_seq: torch.Tensor, return_attention: bool = False, lstm_feature: torch.Tensor|None = None): # TODO: Fix this, make it a chain
+        # If use lstm, the shapes of the temporal_layer changes (bc of torch.cat)
         if lstm_feature is not None:
             B, W, _ = graph_seq.shape # (batch_size, window_size, hidden)
             D = lstm_feature.shape[-1]  # hidden dim
 
-            # TODO: how to match the shapes, I assumme window_size is in days? But a healdine is only a day?
-            # Do I add it here, or somewhere else in this funcion? Below is just a 'cheat-code' to match shapes
+            # Copy the headline over window_size, to match shapes
             lstm_expanded = lstm_feature.unsqueeze(1).expand(B, W, D)  # (batch_size, window_size, hidden)
 
             graph_seq = torch.cat([graph_seq, lstm_expanded], dim=-1)  # (batch_size, window_size, hidden * 2)
 
         _, final_repr, attn = self.temporal_layer(graph_seq)
         pred_return = self.return_head(final_repr)
+
         if return_attention:
             return pred_return, final_repr, attn
         return pred_return

@@ -342,14 +342,17 @@ class LSTM_MDGNN_Fusion(nn.Module):
             nn.Dropout(dropout),
         )
 
+        # TODO: Auto-adjust dim. Use 2*graph_hidden_dim if use LSTM
+        incl_lstm_dim = 2 * graph_hidden_dim
+
         self.graph_proj = nn.Sequential(
-            nn.Linear(graph_hidden_dim, hidden_dim),
+            nn.Linear(incl_lstm_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
 
         self.fusion_head = nn.Sequential(
-            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
@@ -366,12 +369,12 @@ class LSTM_MDGNN_Fusion(nn.Module):
         _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
             graph_seq, return_attention=True, lstm_feature=text_repr
         ) # TODO: Fix this, make it a chain, not a V-structure
-        tqdm.write(f"graph-repr: {graph_repr.shape}")
+        tqdm.write(f"graph-repr (PRE-PROJECTION): {graph_repr.shape}")
 
         graph_repr = self.graph_proj(graph_repr)
         tqdm.write(f"graph-repr (POST-PROJECTION): {graph_repr.shape}")
 
-        fused = torch.cat([text_repr, num_repr, graph_repr], dim=1) # TODO: Fix this, make it a chain, not a V-structure
+        fused = torch.cat([num_repr, graph_repr], dim=1)
         out = self.fusion_head(fused).squeeze(-1)
         return out
 
