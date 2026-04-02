@@ -351,7 +351,7 @@ class LSTM_MDGNN_Fusion(nn.Module):
         text_repr = self.lstm_encoder(text_ids, stock_ids)
         num_repr = self.numeric_proj(numeric_feats)
 
-        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
+        _, graph_repr, _ = self.mdgnn_model.forward(
             graph_seq, return_attention=True
         )
         graph_repr = self.graph_proj(graph_repr)

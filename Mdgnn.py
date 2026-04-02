@@ -329,6 +329,7 @@ class MDGNN(nn.Module):
         ff_dim: int = 256,
         dropout: float = 0.1,
         alibi_slope: float = 1.0,
+        incl_lstm: bool = False,
     ):
         super().__init__()
 
@@ -343,8 +344,11 @@ class MDGNN(nn.Module):
             dropout=dropout
         )
 
+        # TODO: Auto-adjust dim. Use asjusted hidden dim if use LSTM
+        new_hidden_dim = hidden_dim * 2 if incl_lstm else hidden_dim
+
         self.temporal_layer = TemporalExtractionLayer(
-            hidden_dim=hidden_dim,
+            hidden_dim=new_hidden_dim,
             num_heads=num_heads,
             ff_dim=ff_dim,
             dropout=dropout,
@@ -352,7 +356,7 @@ class MDGNN(nn.Module):
         )
 
         self.return_head = PredictionHead(
-            hidden_dim=hidden_dim,
+            hidden_dim=new_hidden_dim,
             dropout=dropout
         )
 
@@ -365,12 +369,18 @@ class MDGNN(nn.Module):
     ):
         return self.snapshot_encoder(stock_feat, bank_feat, industry_feat, edges)
 
-    def forward_from_sequence(self, x_seq: torch.Tensor, return_attention: bool = False):
-        _, final_repr, attn = self.temporal_layer(x_seq)
+    def forward(self, graph_seq: torch.Tensor, return_attention: bool = False, lstm_feature: torch.Tensor|None = None):
+        if lstm_feature is not None:
+            B, W, _ = graph_seq.shape # (batch_size, window_size, hidden)
+            D = lstm_feature.shape[-1]  # hidden dim
+
+            # Copy the headline over window_size, to match shapes
+            lstm_expanded = lstm_feature.unsqueeze(1).expand(B, W, D)  # (batch_size, window_size, hidden)
+
+            graph_seq = torch.cat([graph_seq, lstm_expanded], dim=-1)  # (batch_size, window_size, hidden * 2)
+
+        _, final_repr, attn = self.temporal_layer(graph_seq)
         pred_return = self.return_head(final_repr)
         if return_attention:
             return pred_return, final_repr, attn
         return pred_return
-
-    def forward(self, x_seq: torch.Tensor, return_attention: bool = False):
-        return self.forward_from_sequence(x_seq, return_attention=return_attention)
