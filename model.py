@@ -667,7 +667,6 @@ if __name__ == "__main__":
                 stock_batch,
                 graph_seq_batch,
             ) in train_loader:
-                tqdm.write(str(X_text_batch))
                 X_text_batch = X_text_batch.to(device)
                 X_num_batch = X_num_batch.to(device)
                 Y_batch = Y_batch.to(device)
@@ -688,9 +687,6 @@ if __name__ == "__main__":
                 optimizer.step()
 
                 train_loss += loss.item()
-
-                break
-            break
 
             model.eval()
             val_loss = 0.0
@@ -732,7 +728,6 @@ if __name__ == "__main__":
                 if counter >= PATIENCE:
                     break
                 
-        break
         loss_df = pd.DataFrame(
             {
                 "epoch": list(range(1, len(train_losses) + 1)),
