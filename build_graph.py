@@ -24,7 +24,6 @@ Output files (in graph_output/):
 """
 
 import pandas as pd
-import numpy as np
 import os
 import gc
 from tqdm import tqdm
@@ -32,12 +31,12 @@ from tqdm import tqdm
 
 # CONFIG
 
-PARENT_DIR  = "SEC data"       # folder containing all quarter subfolders
-OUTPUT_DIR  = "graph_output"
-CHUNKSIZE   = 200_000
+PARENT_DIR = "SEC data"  # folder containing all quarter subfolders
+OUTPUT_DIR = "graph_output"
+CHUNKSIZE = 200_000
 
 # All quarters to process
-YEARS    = range(2018, 2024)   # 2018 to 2023 inclusive
+YEARS = range(2018, 2024)  # 2018 to 2023 inclusive
 QUARTERS = [1, 2, 3, 4]
 
 # Quarter end dates — used to filter PERIODOFREPORT per quarter
@@ -56,6 +55,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # actually contains the PREVIOUS quarter's period too.
 # We just load ALL rows from each folder — no period filter needed
 # since each folder is already scoped to one quarter's submissions.
+
 
 def get_quarter_folders(parent_dir):
     """Return sorted list of (year, quarter, folder_path) tuples that exist on disk."""
@@ -86,22 +86,21 @@ if len(quarters) == 0:
 
 # ACCUMULATORS
 
-all_bank_nodes  = []
+all_bank_nodes = []
 all_stock_nodes = []
-all_edges       = []
+all_edges = []
 
 
 # MAIN LOOP — one iteration per quarter
 
-quarter_bar = tqdm(quarters, desc="Quarters", unit="quarter",
-                   ncols=80, colour="green")
+quarter_bar = tqdm(quarters, desc="Quarters", unit="quarter", ncols=80, colour="green")
 
 for year, q, folder_path in quarter_bar:
     label = f"{year} Q{q}"
     quarter_bar.set_description(f"Processing {label}")
 
-    sub_path  = os.path.join(folder_path, "SUBMISSION.tsv")
-    cov_path  = os.path.join(folder_path, "COVERPAGE.tsv")
+    sub_path = os.path.join(folder_path, "SUBMISSION.tsv")
+    cov_path = os.path.join(folder_path, "COVERPAGE.tsv")
     info_path = os.path.join(folder_path, "INFOTABLE.tsv")
 
     # Skip quarter if any file is missing
@@ -109,19 +108,19 @@ for year, q, folder_path in quarter_bar:
         tqdm.write(f"  ⚠ {label}: missing one or more TSV files, skipping")
         continue
 
-    # SUBMISSION 
+    # SUBMISSION
     submission = pd.read_csv(sub_path, sep="\t", dtype=str)
     submission.columns = submission.columns.str.strip()
     submission["ACCESSION_NUMBER"] = submission["ACCESSION_NUMBER"].str.strip()
 
     # Tag every row with year + quarter for later reference
-    submission["year"]    = year
+    submission["year"] = year
     submission["quarter"] = q
 
     valid_accessions = set(submission["ACCESSION_NUMBER"])
     tqdm.write(f"  {label}: {len(submission):,} filings")
 
-    # COVERPAGE -> bank nodes 
+    # COVERPAGE -> bank nodes
     coverpage = pd.read_csv(cov_path, sep="\t", dtype=str)
     coverpage.columns = coverpage.columns.str.strip()
     coverpage["ACCESSION_NUMBER"] = coverpage["ACCESSION_NUMBER"].str.strip()
@@ -129,27 +128,39 @@ for year, q, folder_path in quarter_bar:
 
     bank_df = coverpage.merge(
         submission[["ACCESSION_NUMBER", "CIK", "FILING_DATE", "year", "quarter"]],
-        on="ACCESSION_NUMBER", how="left"
+        on="ACCESSION_NUMBER",
+        how="left",
     )
     bank_df["FILING_DATE"] = pd.to_datetime(bank_df["FILING_DATE"], errors="coerce")
 
     bank_q = (
         bank_df.sort_values("FILING_DATE", ascending=False)
-        .drop_duplicates(subset=["CIK"])
-        [["CIK", "FILINGMANAGER_NAME", "FILINGMANAGER_CITY",
-          "FILINGMANAGER_STATEORCOUNTRY", "REPORTTYPE",
-          "FORM13FFILENUMBER", "FILING_DATE", "ACCESSION_NUMBER",
-          "year", "quarter"]]
-        .rename(columns={
-            "CIK":                         "bank_id",
-            "FILINGMANAGER_NAME":           "bank_name",
-            "FILINGMANAGER_CITY":           "city",
-            "FILINGMANAGER_STATEORCOUNTRY": "state",
-            "REPORTTYPE":                   "report_type",
-            "FORM13FFILENUMBER":            "form13f_number",
-            "FILING_DATE":                  "filing_date",
-            "ACCESSION_NUMBER":             "accession_number"
-        })
+        .drop_duplicates(subset=["CIK"])[
+            [
+                "CIK",
+                "FILINGMANAGER_NAME",
+                "FILINGMANAGER_CITY",
+                "FILINGMANAGER_STATEORCOUNTRY",
+                "REPORTTYPE",
+                "FORM13FFILENUMBER",
+                "FILING_DATE",
+                "ACCESSION_NUMBER",
+                "year",
+                "quarter",
+            ]
+        ]
+        .rename(
+            columns={
+                "CIK": "bank_id",
+                "FILINGMANAGER_NAME": "bank_name",
+                "FILINGMANAGER_CITY": "city",
+                "FILINGMANAGER_STATEORCOUNTRY": "state",
+                "REPORTTYPE": "report_type",
+                "FORM13FFILENUMBER": "form13f_number",
+                "FILING_DATE": "filing_date",
+                "ACCESSION_NUMBER": "accession_number",
+            }
+        )
         .reset_index(drop=True)
     )
     bank_q.insert(0, "node_type", "bank")
@@ -161,17 +172,33 @@ for year, q, folder_path in quarter_bar:
     gc.collect()
 
     # INFOTABLE -> stock nodes + edges
-    cols_to_load = ["ACCESSION_NUMBER", "NAMEOFISSUER", "TITLEOFCLASS", "CUSIP",
-                    "VALUE", "SSHPRNAMT",
-                    "VOTING_AUTH_SOLE", "VOTING_AUTH_SHARED", "VOTING_AUTH_NONE"]
+    cols_to_load = [
+        "ACCESSION_NUMBER",
+        "NAMEOFISSUER",
+        "TITLEOFCLASS",
+        "CUSIP",
+        "VALUE",
+        "SSHPRNAMT",
+        "VOTING_AUTH_SOLE",
+        "VOTING_AUTH_SHARED",
+        "VOTING_AUTH_NONE",
+    ]
 
     chunks = []
-    with tqdm(desc=f"  Reading INFOTABLE {label}", unit="rows",
-              ncols=80, colour="cyan", leave=False) as pbar:
+    with tqdm(
+        desc=f"  Reading INFOTABLE {label}",
+        unit="rows",
+        ncols=80,
+        colour="cyan",
+        leave=False,
+    ) as pbar:
         for chunk in pd.read_csv(
-            info_path, sep="\t", dtype=str,
-            usecols=cols_to_load, on_bad_lines="skip",
-            chunksize=CHUNKSIZE
+            info_path,
+            sep="\t",
+            dtype=str,
+            usecols=cols_to_load,
+            on_bad_lines="skip",
+            chunksize=CHUNKSIZE,
         ):
             chunk.columns = chunk.columns.str.strip()
             chunk["ACCESSION_NUMBER"] = chunk["ACCESSION_NUMBER"].str.strip()
@@ -192,17 +219,17 @@ for year, q, folder_path in quarter_bar:
     def clean_cusip(x):
         if not isinstance(x, str):
             return None
-        
+
         x = x.strip().upper()
-        
+
         if x in ["", "NONE", "NULL", "NAN", "INF", "COMMON"]:
             return None
-        
+
         x = x.lstrip("0")
-        
+
         if len(x) < 8 or len(x) > 9:
             return None
-        
+
         return x
 
     infotable["CUSIP"] = infotable["CUSIP"].apply(clean_cusip)
@@ -219,17 +246,20 @@ for year, q, folder_path in quarter_bar:
     infotable = infotable[infotable["CUSIP"].notna()]
 
     stock_q = (
-        infotable.drop_duplicates(subset=["CUSIP"])
-        [["CUSIP", "NAMEOFISSUER", "TITLEOFCLASS"]]
-        .rename(columns={
-            "CUSIP": "stock_id",
-            "NAMEOFISSUER": "stock_name",
-            "TITLEOFCLASS": "title_of_class"
-        })
+        infotable.drop_duplicates(subset=["CUSIP"])[
+            ["CUSIP", "NAMEOFISSUER", "TITLEOFCLASS"]
+        ]
+        .rename(
+            columns={
+                "CUSIP": "stock_id",
+                "NAMEOFISSUER": "stock_name",
+                "TITLEOFCLASS": "title_of_class",
+            }
+        )
         .reset_index(drop=True)
     )
     stock_q.insert(0, "node_type", "stock")
-    stock_q["year"]    = year
+    stock_q["year"] = year
     stock_q["quarter"] = q
     all_stock_nodes.append(stock_q)
 
@@ -240,25 +270,29 @@ for year, q, folder_path in quarter_bar:
     )
     infotable = infotable.dropna(subset=["bank_id"])
 
-    for col in ["VALUE", "SSHPRNAMT",
-                "VOTING_AUTH_SOLE", "VOTING_AUTH_SHARED", "VOTING_AUTH_NONE"]:
+    for col in [
+        "VALUE",
+        "SSHPRNAMT",
+        "VOTING_AUTH_SOLE",
+        "VOTING_AUTH_SHARED",
+        "VOTING_AUTH_NONE",
+    ]:
         infotable[col] = pd.to_numeric(infotable[col], errors="coerce").fillna(0)
     gc.collect()
 
     edges_q = (
-        infotable
-        .groupby(["bank_id", "CUSIP"], as_index=False)
+        infotable.groupby(["bank_id", "CUSIP"], as_index=False)
         .agg(
-            total_value   = ("VALUE",              "sum"),
-            total_shares  = ("SSHPRNAMT",          "sum"),
-            voting_sole   = ("VOTING_AUTH_SOLE",   "sum"),
-            voting_shared = ("VOTING_AUTH_SHARED", "sum"),
-            voting_none   = ("VOTING_AUTH_NONE",   "sum"),
+            total_value=("VALUE", "sum"),
+            total_shares=("SSHPRNAMT", "sum"),
+            voting_sole=("VOTING_AUTH_SOLE", "sum"),
+            voting_shared=("VOTING_AUTH_SHARED", "sum"),
+            voting_none=("VOTING_AUTH_NONE", "sum"),
         )
         .rename(columns={"CUSIP": "stock_id"})
     )
     edges_q.insert(0, "edge_type", "bank_holds_stock")
-    edges_q["year"]    = year
+    edges_q["year"] = year
     edges_q["quarter"] = q
     all_edges.append(edges_q)
 
@@ -277,7 +311,9 @@ with tqdm(total=3, desc="Merging", unit="table", ncols=80, colour="yellow") as m
 
     # Bank nodes — keep most recent record per bank_id across all quarters
     bank_nodes = pd.concat(all_bank_nodes, ignore_index=True)
-    bank_nodes["filing_date"] = pd.to_datetime(bank_nodes["filing_date"], errors="coerce")
+    bank_nodes["filing_date"] = pd.to_datetime(
+        bank_nodes["filing_date"], errors="coerce"
+    )
     bank_nodes = (
         bank_nodes.sort_values("filing_date", ascending=False)
         .drop_duplicates(subset=["bank_id"])
@@ -307,25 +343,19 @@ with tqdm(total=3, desc="Merging", unit="table", ncols=80, colour="yellow") as m
 
 print("Computing aggregate features ...")
 
-bank_features = (
-    edges.groupby("bank_id", as_index=False)
-    .agg(
-        num_stocks_held   = ("stock_id",    "nunique"),
-        total_aum_value   = ("total_value", "sum"),
-        avg_position_size = ("total_value", "mean"),
-        num_quarters_active = ("quarter",   "nunique"),
-    )
+bank_features = edges.groupby("bank_id", as_index=False).agg(
+    num_stocks_held=("stock_id", "nunique"),
+    total_aum_value=("total_value", "sum"),
+    avg_position_size=("total_value", "mean"),
+    num_quarters_active=("quarter", "nunique"),
 )
 bank_nodes = bank_nodes.merge(bank_features, on="bank_id", how="left")
 
-stock_features = (
-    edges.groupby("stock_id", as_index=False)
-    .agg(
-        num_holders                = ("bank_id",      "nunique"),
-        total_institutional_value  = ("total_value",  "sum"),
-        total_institutional_shares = ("total_shares", "sum"),
-        num_quarters_held          = ("quarter",      "nunique"),
-    )
+stock_features = edges.groupby("stock_id", as_index=False).agg(
+    num_holders=("bank_id", "nunique"),
+    total_institutional_value=("total_value", "sum"),
+    total_institutional_shares=("total_shares", "sum"),
+    num_quarters_held=("quarter", "nunique"),
 )
 stock_nodes = stock_nodes.merge(stock_features, on="stock_id", how="left")
 
@@ -334,12 +364,13 @@ stock_nodes = stock_nodes.merge(stock_features, on="stock_id", how="left")
 
 print("Saving outputs ...")
 files = {
-    f"{OUTPUT_DIR}/nodes_bank.parquet":       bank_nodes,
-    f"{OUTPUT_DIR}/nodes_stock.parquet":      stock_nodes,
+    f"{OUTPUT_DIR}/nodes_bank.parquet": bank_nodes,
+    f"{OUTPUT_DIR}/nodes_stock.parquet": stock_nodes,
     f"{OUTPUT_DIR}/edges_bank_stock.parquet": edges,
 }
-with tqdm(files.items(), desc="Saving", unit="file",
-          ncols=80, colour="yellow", leave=False) as fbar:
+with tqdm(
+    files.items(), desc="Saving", unit="file", ncols=80, colour="yellow", leave=False
+) as fbar:
     for path, df in fbar:
         df.to_parquet(path, index=False)
         tqdm.write(f"  ✓ {path}  ({os.path.getsize(path)/1e6:.1f} MB)")
