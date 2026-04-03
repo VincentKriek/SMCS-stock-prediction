@@ -16,7 +16,7 @@ import gc
 
 
 # Configuration
-NEWS_N_ROWS = None
+NEWS_N_ROWS = 1000
 
 ROLLING_START_DATE = "2018-01-01"
 ROLLING_END_DATE = "2023-02-28"
@@ -823,8 +823,10 @@ if __name__ == "__main__":
     print(f"Using ordered graph split files: {GRAPH_SPLIT_FILES}")
     print(f"Loaded CUSIP-symbol mappings: {len(GRAPH_ID_TO_SYMBOL)}")
 
+    # path = "../../data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
+    path = "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
     l = LazyHeadlineVectorizer(
-        "prepared_data_2018-01-01_2023-12-31.parquet",
+        path,
         n_rows=NEWS_N_ROWS,
     )
     l.run()
