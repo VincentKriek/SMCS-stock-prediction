@@ -54,7 +54,7 @@ class LazyHeadlineVectorizer:
                 (pl.col("Date") >= self.start_date) & (pl.col("Date") <= self.end_date)
             )
             self.n_rows = self.lf.select(pl.len()).collect().item()
-        elif self.n_rows:
+        else:
             self.lf = pl.scan_parquet(self.parquet_path, n_rows=self.n_rows)
 
         assert (
