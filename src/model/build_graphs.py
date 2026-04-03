@@ -1,5 +1,9 @@
 # TODO: ensure the stock nodes can be mapped to the stocks in the feature data
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+
 import polars as pl
 import pandas as pd
 import numpy as np
@@ -8,10 +12,29 @@ import os
 
 from model import add_next_day_return_target
 
+
 NEWS_N_ROWS = None
 ROLLING_START_DATE = pd.Timestamp("2018-01-01")
 ROLLING_END_DATE = pd.Timestamp("2023-12-31")
 SPLIT_MONTHS = 6
+
+CUSIP_CSV_PATH = "data/graphs/CUSIP.csv"
+
+
+def load_cusip_mapping(cusip_csv_path: str) -> dict:
+    df = pd.read_csv(cusip_csv_path, dtype=str)
+    df.columns = [c.strip().lower() for c in df.columns]
+    # Map CUSIP -> symbol (inverted from before)
+    mapping = dict(zip(df["cusip"].str.upper(), df["symbol"]))
+    print(f"Loaded CUSIP mapping: {len(mapping)} CUSIPs.")
+    return mapping
+
+def map_stock_ids_to_cusips(stock_ids: list, cusip_mapping: dict) -> list:
+    symbols = [cusip_mapping.get(str(sid).strip().upper()) for sid in stock_ids]
+    missing = sum(1 for s in symbols if s is None)
+    if missing:
+        print(f"  Warning: {missing}/{len(stock_ids)} stock_ids had no symbol match.")
+    return symbols
 
 
 def build_split_graphs(
@@ -22,6 +45,7 @@ def build_split_graphs(
     edges_bank_stock_path: str,
     edges_stock_stock_path: str,
     save_dir: str,
+    cusip_mapping: dict,
 ):
     print(f"\n--- Building Graphs for Split {split_idx} ---")
 
@@ -133,6 +157,7 @@ def build_split_graphs(
         nodes_stock_lf=nodes_stock_lf,
         edges_bank_stock_lf=edges_bank_stock_lf,
         edges_stock_stock_lf=edges_stock_stock_lf,
+        cusip_mapping=cusip_mapping,
     )
 
     # 6. Save directly to .pt file without encoding via MDGNN
@@ -173,6 +198,7 @@ def build_quarter_snapshots(
     nodes_stock_lf: pl.LazyFrame,
     edges_bank_stock_lf: pl.LazyFrame,
     edges_stock_stock_lf: pl.LazyFrame,
+    cusip_mapping: dict,
 ):
     snapshots = {}
 
@@ -274,9 +300,16 @@ def build_quarter_snapshots(
             dtype=torch.float32,
         )
 
-        # 6. Store Snapshot
+        # 6. Map CUSIPs to stock symbols
+        stock_ids = s_df["stock_id"].to_list()
+        stock_symbols = map_stock_ids_to_cusips(stock_ids, cusip_mapping)
+        
+        stock_cusips = stock_ids
+
+        # 7. Store Snapshot
         snapshots[q_label] = {
-            "stock_ids": s_df["stock_id"].to_list(),
+            "stock_ids": stock_ids,
+            "stock_symbols": stock_symbols,  # parallel list of CUSIPs; None where no match
             "bank_ids": b_df["bank_id"].to_list(),
             "stock_feat": torch.tensor(
                 s_df.select(stock_feat_cols).fill_null(0.0).to_numpy(),
@@ -302,6 +335,9 @@ def build_quarter_snapshots(
 def main():
     data_path = "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
 
+    # Load CUSIP mapping once upfront
+    cusip_mapping = load_cusip_mapping(CUSIP_CSV_PATH)
+
     print("Scanning data for trading dates and target alignment...")
     lf = (
         pl.scan_parquet(data_path)
@@ -321,7 +357,7 @@ def main():
         print("No valid rolling splits were created.")
         return
 
-    save_dir = "data/model/graphs"
+
     for split_idx, split_info in enumerate(rolling_splits, start=1):
         build_split_graphs(
             split_idx=split_idx,
@@ -330,7 +366,8 @@ def main():
             nodes_stock_path="data/graphs/nodes_stock.parquet",
             edges_bank_stock_path="data/graphs/edges_bank_stock.parquet",
             edges_stock_stock_path="data/graphs/edges_stock_stock.parquet",
-            save_dir=save_dir,
+            save_dir="data/model/graphs",
+            cusip_mapping=cusip_mapping,
         )
 
 
