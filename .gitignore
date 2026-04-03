@@ -208,3 +208,6 @@ __marimo__/
 
 # Project specific
 data
+uv-rocm.lock
+uv-cuda.lock
+uv-cpu.lock

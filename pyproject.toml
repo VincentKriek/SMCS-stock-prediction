@@ -3,7 +3,7 @@ name = "smcs-stock-prediction"
 version = "0.1.0"
 description = ""
 readme = "README.md"
-requires-python = "==3.12.*"
+requires-python = "==3.11.*"
 dependencies = [
     "polars>=1.38.1",
     "python-dotenv>=1.2.2",
@@ -13,8 +13,66 @@ dependencies = [
     "sumy>=0.12.0",
     "huggingface-hub>=1.6.0",
     "httpx[http2]>=0.28.1",
-    "numpy>=2.4.3",
     "langchain-ollama>=1.0.1",
     "langchain>=1.2.11",
+    "numpy<2",
+    "pandas>=3.0.1",
+    "gensim>=4.4.0",
     "pyarrow>=23.0.1",
+    "scikit-learn>=1.8.0",
+]
+
+[project.optional-dependencies]
+# Force a modern version that definitely has x86_64 ROCm wheels
+cpu = [
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+]
+cu121 = [
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+]
+rocm60 = [
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+    "pytorch-triton-rocm>=3.1.0; sys_platform == 'linux'"
+]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu121" },
+        { extra = "rocm60" },
+    ],
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm62"
+url = "https://download.pytorch.org/whl/rocm6.2"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu121", extra = "cu121" },
+  { index = "pytorch-rocm62", extra = "rocm60" },
+]
+torchvision = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu121", extra = "cu121" },
+  { index = "pytorch-rocm62", extra = "rocm60" },
+]
+pytorch-triton-rocm = [
+  { index = "pytorch-rocm62", extra = "rocm60", marker = "sys_platform == 'linux'" },
 ]
