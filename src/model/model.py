@@ -20,7 +20,7 @@ from tqdm import tqdm  # noqa: E402
 
 
 # Configuration
-NEWS_N_ROWS = 10000
+NEWS_N_ROWS = None
 
 ROLLING_START_DATE = "2018-01-01"
 ROLLING_END_DATE = "2023-12-31"
@@ -32,7 +32,7 @@ HIDDEN_DIM = 128
 GNN_LAYERS = 2
 WINDOW_SIZE = 10
 MAX_EPOCHS = 500
-PATIENCE = 200
+PATIENCE = 20
 BATCH_SIZE = 8
 DROPOUT = 0.1
 MAX_SPLITS = None
@@ -1196,6 +1196,7 @@ if __name__ == "__main__":
 
         test_loss = 0.0
         all_preds = []
+        all_targets = []
         with torch.no_grad():
             for (
                 X_text_test,
@@ -1219,10 +1220,30 @@ if __name__ == "__main__":
 
                 test_loss += criterion(preds, Y_test).item()
                 all_preds.extend(preds.detach().cpu().tolist())
+                all_targets.extend(Y_test.detach().cpu().tolist())
 
         avg_test_loss = test_loss / max(len(test_loader), 1)
         print(f"{experiment_name} | Split {split_idx} | Test={avg_test_loss:.6f}")
-        print(f"{experiment_name} | Split {split_idx} | Predictions={all_preds}")
+
+        # Save predictions and targets to CSV
+        output_dir = Path("data/model/output")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        results_df = pd.DataFrame(
+            [
+                {
+                    "Date": row.get("Date"),
+                    "Stock_symbol": row.get("Stock_symbol"),
+                    "target_return": target,
+                    "prediction": pred,
+                }
+                for row, target, pred in zip(
+                    test_loader.dataset.valid_rows, all_targets, all_preds
+                )
+            ]
+        )
+        csv_path = output_dir / f"preds_{experiment_name}_split_{split_idx}.csv"
+        results_df.to_csv(csv_path, index=False)
+        print(f"Predictions saved to: {csv_path}")
 
         del train_loader, val_loader, test_loader, model
         if USE_LSTM and lstm_encoder is not None:
