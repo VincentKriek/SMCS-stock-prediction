@@ -22,18 +22,8 @@ num_splits = 1
 output_dir = Path("data/model/output")
 
 for s in range(1, num_splits + 1):
-    # csv_path = output_dir / f"preds_{experiment_name}_split_{s}.csv"
-    # df = pd.read_csv(csv_path)
-
-    # TODO: remove this when using real results
-    n = 10
-    res_df = pd.DataFrame({
-        "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
-        "Stock_symbol": np.random.choice(["A", "B", "C"], size=n),
-        "target_return": np.random.rand(n),
-        "prediction": np.random.rand(n),
-    })
-    print(res_df)
+    csv_path = output_dir / f"preds_{experiment_name}_split_{s}.csv"
+    res_df = pd.read_csv(csv_path)
 
     mse = mean_squared_error(y_true=res_df["target_return"], y_pred=res_df["prediction"])
     r2 = r2_score(y_true=res_df["target_return"], y_pred=res_df["prediction"])
@@ -75,16 +65,8 @@ for s in range(1, num_splits + 1):
     print(results)
 
     # Plot losses over epochs
-    # loss_df = pd.read_csv(f"losses_{experiment_name}_split_{s}")
-
-    # TODO: remove this when using real results
-    n = 25
-    loss_df = pd.DataFrame({
-        "epoch": range(n),
-        "train_loss": np.random.rand(n),
-        "val_loss": np.random.rand(n),
-    })
-    print(loss_df)
+    csv_path = output_dir / f"losses_{experiment_name}_split_{s}"
+    loss_df = pd.read_csv(csv_path)
 
     plt.figure(figsize=(8, 6))
     plt.plot(loss_df["epoch"], loss_df["train_loss"], label="Train Loss")
