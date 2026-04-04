@@ -1,18 +1,22 @@
-from lstm import LazyHeadlineVectorizer, LSTM_Encoder
-from Mdgnn import MDGNN
+from dotenv import load_dotenv
 
-from pathlib import Path
-from typing import Optional
+load_dotenv()
 
-import polars as pl
-import pandas as pd
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
-import torch.optim as optim
-import re
-import gc
-from tqdm import tqdm
+from lstm import LazyHeadlineVectorizer, LSTM_Encoder  # noqa: E402
+from Mdgnn import MDGNN  # noqa: E402
+
+from pathlib import Path  # noqa: E402
+from typing import Optional  # noqa: E402
+
+import polars as pl  # noqa: E402
+import pandas as pd  # noqa: E402
+import torch  # noqa: E402
+import torch.nn as nn  # noqa: E402
+from torch.utils.data import DataLoader, Dataset  # noqa: E402
+import torch.optim as optim  # noqa: E402
+import re  # noqa: E402
+import gc  # noqa: E402
+from tqdm import tqdm  # noqa: E402
 
 
 # Configuration
@@ -514,7 +518,12 @@ class NewsGraphDataset(Dataset):
             text_ids = list(raw_text_ids)[: self.max_headline_len]
             text_ids += [0] * (self.max_headline_len - len(text_ids))
 
-        numeric_feats = [float(row.get(col, 0.0)) for col in self.feature_cols]
+        numeric_feats = [
+            (
+                v if (v := float(row.get(col, 0.0) or 0.0)) == v else 0.0
+            )  # replace NaN with 0.0
+            for col in self.feature_cols
+        ]
 
         if self.use_graph and self.graph_cache is not None:
             graph_seq = self.graph_cache.lookup_window(
@@ -545,6 +554,7 @@ class NumericFeatureProjector(nn.Module):
         self.num_numeric_features = num_numeric_features
         if num_numeric_features > 0:
             self.proj = nn.Sequential(
+                nn.BatchNorm1d(num_numeric_features),
                 nn.Linear(num_numeric_features, hidden_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout),
@@ -731,7 +741,9 @@ def add_next_day_return_target(lf: pl.LazyFrame) -> pl.LazyFrame:
             / pl.col("close")
         ).alias("target_return")
     )
-    lf = lf.filter(pl.col("target_return").is_not_null())
+    lf = lf.filter(
+        pl.col("target_return").is_not_null() & pl.col("target_return").is_finite()
+    )
     return lf
 
 
@@ -860,7 +872,7 @@ def build_loaders_for_split(
     )
 
     return (
-        DataLoader(train_dataset, batch_size=batch_size, shuffle=True),
+        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True),
         DataLoader(val_dataset, batch_size=batch_size, shuffle=False),
         DataLoader(test_dataset, batch_size=batch_size, shuffle=False),
     )
@@ -868,6 +880,8 @@ def build_loaders_for_split(
 
 # Main
 if __name__ == "__main__":
+    # torch.autograd.set_detect_anomaly(True)  # for debug
+
     experiment_name = get_experiment_name(USE_LSTM, USE_MDGNN)
     print(f"Running experiment mode: {experiment_name}")
     print(f"Using numeric features: {NUMERIC_FEATURES}")
@@ -1101,6 +1115,19 @@ if __name__ == "__main__":
                 stock_batch = stock_batch.to(device)
                 graph_seq_batch = graph_seq_batch.to(device)
 
+                if (
+                    torch.isnan(X_text_batch).any()
+                    or torch.isnan(X_num_batch).any()
+                    or torch.isnan(Y_batch).any()
+                    or torch.isnan(graph_seq_batch).any()
+                ):
+                    print(
+                        f"NaNs found in inputs! Text: {torch.isnan(X_text_batch).any()}, Num: {torch.isnan(X_num_batch).any()}, Y: {torch.isnan(Y_batch).any()}, Graph: {torch.isnan(graph_seq_batch).any()}"
+                    )
+                    import sys
+
+                    sys.exit(1)
+
                 optimizer.zero_grad()
                 preds = model(
                     text_ids=X_text_batch,
@@ -1108,6 +1135,12 @@ if __name__ == "__main__":
                     stock_ids=stock_batch,
                     graph_seq=graph_seq_batch,
                 )
+
+                if torch.isnan(preds).any():
+                    print("NaNs found in predictions!")
+                    import sys
+
+                    sys.exit(1)
 
                 loss = criterion(preds, Y_batch)
                 loss.backward()
@@ -1156,7 +1189,6 @@ if __name__ == "__main__":
                 counter += 1
                 if counter >= PATIENCE:
                     tqdm.write(f"Early stopping triggered at epoch {epoch+1}")
-                    torch.save(model.state_dict(), save_path)
                     break
 
         model.load_state_dict(torch.load(save_path, map_location=device))

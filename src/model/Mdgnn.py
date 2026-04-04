@@ -7,12 +7,15 @@ import torch.nn.functional as F
 
 
 def masked_segment_softmax(scores: torch.Tensor, index: torch.Tensor, num_segments: int):
-    out = torch.zeros_like(scores)
-    for i in range(num_segments):
-        mask = (index == i)
-        if mask.any():
-            out[mask] = F.softmax(scores[mask], dim=0)
-    return out
+    max_val = torch.full((num_segments,), float('-inf'), device=scores.device, dtype=scores.dtype)
+    max_val.scatter_reduce_(0, index, scores, reduce="amax", include_self=False)
+    max_val[max_val == float('-inf')] = 0.0
+    
+    scores_exp = torch.exp(scores - max_val[index])
+    sum_exp = torch.zeros(num_segments, device=scores.device, dtype=scores.dtype)
+    sum_exp.scatter_add_(0, index, scores_exp)
+    
+    return scores_exp / (sum_exp[index] + 1e-16)
 
 
 class RelationGraphAttention(nn.Module):
