@@ -1202,6 +1202,7 @@ if __name__ == "__main__":
             "train_loss": train_losses,
             "val_loss": val_losses,
         })
+        loss_df.to_csv(f"losses_{experiment_name}_split_{split_idx}")
 
         model.load_state_dict(torch.load(save_path, map_location=device))
         model.eval()
