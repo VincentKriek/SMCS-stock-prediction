@@ -984,6 +984,8 @@ if __name__ == "__main__":
             )
 
     loaded_graph_caches = {}
+    output_dir = Path("data/model/output")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     for split_idx, split_info in enumerate(rolling_splits, start=1):
         print(f"Starting split {split_idx}...")
@@ -1202,7 +1204,8 @@ if __name__ == "__main__":
             "train_loss": train_losses,
             "val_loss": val_losses,
         })
-        loss_df.to_csv(f"losses_{experiment_name}_split_{split_idx}")
+        loss_path = output_dir / f"losses_{experiment_name}_split_{split_idx}"
+        loss_df.to_csv(loss_path)
 
         model.load_state_dict(torch.load(save_path, map_location=device))
         model.eval()
@@ -1240,8 +1243,6 @@ if __name__ == "__main__":
         print(f"{experiment_name} | Split {split_idx} | Test={avg_test_loss:.6f}")
 
         # Save predictions and targets to CSV
-        output_dir = Path("data/model/output")
-        output_dir.mkdir(parents=True, exist_ok=True)
         results_df = pd.DataFrame(
             [
                 {
