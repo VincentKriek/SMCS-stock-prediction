@@ -75,7 +75,7 @@ class TabularStockDataset(Dataset):
                 value = float(value)
             except Exception:
                 value = 0.0
-            if value != value:
+            if value != value:  # NaN
                 value = 0.0
             x.append(value)
 
@@ -125,39 +125,20 @@ class StandardScalerTorch:
         return out
 
 
-# Split logic
-def make_halfyear_rolling_splits(
-    data: pl.LazyFrame,
-    feature_cols: list[str],
+# Split planning only, do not load all rows into pandas at once
+def make_halfyear_rolling_split_plans(
     start_date: str,
     end_date: str,
     train_months: int,
     val_months: int,
     test_months: int,
 ):
-    schema_names = data.collect_schema().names()
-    needed_cols = ["Date", "Stock_symbol", TARGET_COL] + feature_cols
-    used_cols = [c for c in needed_cols if c in schema_names]
-
     start_dt = pd.Timestamp(start_date)
     end_dt = pd.Timestamp(end_date)
 
-    df = (
-        data.select(used_cols)
-        .filter((pl.col("Date") >= pl.lit(start_dt)) & (pl.col("Date") <= pl.lit(end_dt)))
-        .sort("Date")
-        .collect(engine="streaming")
-        .to_pandas()
-    )
-
-    if len(df) == 0:
-        return []
-
-    df["Date"] = pd.to_datetime(df["Date"])
-    df = df.sort_values(["Date", "Stock_symbol"]).reset_index(drop=True)
-
-    splits = []
+    split_plans = []
     anchor = start_dt
+
     while True:
         train_start = anchor
         train_end = train_start + pd.DateOffset(months=train_months) - pd.Timedelta(days=1)
@@ -171,18 +152,48 @@ def make_halfyear_rolling_splits(
 
         test_end = min(test_end, end_dt)
 
-        train_df = df[(df["Date"] >= train_start) & (df["Date"] <= train_end)].copy()
-        val_df = df[(df["Date"] >= val_start) & (df["Date"] <= val_end)].copy()
-        test_df = df[(df["Date"] >= test_start) & (df["Date"] <= test_end)].copy()
-
-        if len(train_df) > 0 and len(val_df) > 0 and len(test_df) > 0:
-            splits.append({"train_df": train_df, "val_df": val_df, "test_df": test_df})
+        split_plans.append(
+            {
+                "train_start": train_start,
+                "train_end": train_end,
+                "val_start": val_start,
+                "val_end": val_end,
+                "test_start": test_start,
+                "test_end": test_end,
+            }
+        )
 
         anchor = anchor + pd.DateOffset(months=test_months)
         if anchor > end_dt:
             break
 
-    return splits
+    return split_plans
+
+
+def collect_split_dataframe(
+    lf: pl.LazyFrame,
+    feature_cols: list[str],
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> pd.DataFrame:
+    schema_names = lf.collect_schema().names()
+    needed_cols = ["Date", "Stock_symbol", TARGET_COL] + feature_cols
+    used_cols = [c for c in needed_cols if c in schema_names]
+
+    df = (
+        lf.select(used_cols)
+        .filter((pl.col("Date") >= pl.lit(start_date)) & (pl.col("Date") <= pl.lit(end_date)))
+        .sort(["Date", "Stock_symbol"])
+        .collect(engine="streaming")
+        .to_pandas()
+    )
+
+    if len(df) == 0:
+        return df
+
+    df["Date"] = pd.to_datetime(df["Date"])
+    df = df.sort_values(["Date", "Stock_symbol"]).reset_index(drop=True)
+    return df
 
 
 # Training / evaluation
@@ -295,9 +306,7 @@ def main():
 
     print(f"Using features: {feature_cols}")
 
-    rolling_splits = make_halfyear_rolling_splits(
-        data=lf,
-        feature_cols=feature_cols,
+    split_plans = make_halfyear_rolling_split_plans(
         start_date=ROLLING_START_DATE,
         end_date=ROLLING_END_DATE,
         train_months=TRAIN_MONTHS,
@@ -305,26 +314,52 @@ def main():
         test_months=TEST_MONTHS,
     )
 
-    if len(rolling_splits) == 0:
-        raise ValueError("No valid rolling splits were created.")
+    if len(split_plans) == 0:
+        raise ValueError("No valid rolling split plans were created.")
 
     if MAX_SPLITS is not None:
-        rolling_splits = rolling_splits[:MAX_SPLITS]
+        split_plans = split_plans[:MAX_SPLITS]
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-    print(f"Total splits to run: {len(rolling_splits)}")
+    print(f"Total splits to run: {len(split_plans)}")
     print(f"Output folder: {OUTPUT_DIR.resolve()}")
 
     summary_rows = []
 
-    for split_idx, split_info in enumerate(rolling_splits, start=1):
+    for split_idx, plan in enumerate(split_plans, start=1):
         print(f"\nStarting split {split_idx}...")
+        print(
+            f"Train: {plan['train_start'].date()} -> {plan['train_end'].date()} | "
+            f"Val: {plan['val_start'].date()} -> {plan['val_end'].date()} | "
+            f"Test: {plan['test_start'].date()} -> {plan['test_end'].date()}"
+        )
 
-        train_df = split_info["train_df"].copy()
-        val_df = split_info["val_df"].copy()
-        test_df = split_info["test_df"].copy()
+        train_df = collect_split_dataframe(
+            lf=lf,
+            feature_cols=feature_cols,
+            start_date=plan["train_start"],
+            end_date=plan["train_end"],
+        )
+        val_df = collect_split_dataframe(
+            lf=lf,
+            feature_cols=feature_cols,
+            start_date=plan["val_start"],
+            end_date=plan["val_end"],
+        )
+        test_df = collect_split_dataframe(
+            lf=lf,
+            feature_cols=feature_cols,
+            start_date=plan["test_start"],
+            end_date=plan["test_end"],
+        )
+
+        if len(train_df) == 0 or len(val_df) == 0 or len(test_df) == 0:
+            print(f"Split {split_idx} is empty. Skipping.")
+            del train_df, val_df, test_df
+            gc.collect()
+            continue
 
         scaler = StandardScalerTorch()
         scaler.fit(train_df, feature_cols)
@@ -341,7 +376,9 @@ def main():
         )
 
         if len(train_loader.dataset) == 0 or len(val_loader.dataset) == 0 or len(test_loader.dataset) == 0:
-            print(f"Split {split_idx} is empty. Skipping.")
+            print(f"Split {split_idx} dataset is empty after loading. Skipping.")
+            del train_df, val_df, test_df, train_loader, val_loader, test_loader
+            gc.collect()
             continue
 
         test_rows = test_loader.dataset.rows
@@ -356,11 +393,13 @@ def main():
                 device=device,
             )
 
-            summary_rows.append({
-                "model": model_name,
-                "split": split_idx,
-                "test_loss": test_loss,
-            })
+            summary_rows.append(
+                {
+                    "model": model_name,
+                    "split": split_idx,
+                    "test_loss": test_loss,
+                }
+            )
 
             results_df = pd.DataFrame(
                 {
@@ -374,10 +413,15 @@ def main():
             results_df.to_csv(csv_path, index=False)
             print(f"Predictions saved to: {csv_path}")
 
-            del model
+            del model, results_df
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+        del train_df, val_df, test_df, train_loader, val_loader, test_loader
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     if summary_rows:
         summary_df = pd.DataFrame(summary_rows)
@@ -388,3 +432,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+    
