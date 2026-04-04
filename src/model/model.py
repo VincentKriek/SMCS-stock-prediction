@@ -12,16 +12,17 @@ from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
 import re
 import gc
+from tqdm import tqdm
 
 
 # Configuration
-NEWS_N_ROWS = None
+NEWS_N_ROWS = 10000
 
 ROLLING_START_DATE = "2018-01-01"
-ROLLING_END_DATE = "2023-02-28"
+ROLLING_END_DATE = "2023-12-31"
 TRAIN_MONTHS = 6
 VAL_MONTHS = 1
-TEST_MONTHS = 6
+TEST_MONTHS = 5
 
 HIDDEN_DIM = 128
 GNN_LAYERS = 2
@@ -34,13 +35,9 @@ MAX_SPLITS = None
 
 TARGET_COL = "target_return"
 
-
-NUMERIC_FEATURES = [
-    "open",
-    "high",
-    # "low",
-    # "close",
-]
+# all columns:
+# ['Date', 'open', 'high', 'low', 'close', 'adj close', 'volume', 'Stock_symbol', 'row_index', 'Article_title', 'summary', 'Sentiment_llm_mean_filled', 'Sentiment_llm_median_filled', 'Sentiment_llm_mode_filled', 'tokenized_headline', 'headline_len', 'embedded_headline', 'target_return']
+NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
 
 # Experiment setup
 # - True / False  -> LSTM only
@@ -49,6 +46,7 @@ NUMERIC_FEATURES = [
 # - False / False -> invalid
 USE_LSTM = True
 USE_MDGNN = True
+LLM_SENTIMENT_MODE = "mean"  # "mean", "median" or "mode". Use None to exclude column
 
 GRAPH_SPLIT_BASE_PATH = "data/model/graphs"
 GRAPH_SPLIT_FILES = [
@@ -872,6 +870,7 @@ if __name__ == "__main__":
     experiment_name = get_experiment_name(USE_LSTM, USE_MDGNN)
     print(f"Running experiment mode: {experiment_name}")
     print(f"Using numeric features: {NUMERIC_FEATURES}")
+    print(f"Using LLM sentiment aggregation mode: {LLM_SENTIMENT_MODE}")
     print(f"Using ordered graph split files: {GRAPH_SPLIT_FILES}")
     print(f"Loaded CUSIP-symbol mappings: {len(GRAPH_ID_TO_SYMBOL)}")
 
@@ -882,13 +881,22 @@ if __name__ == "__main__":
 
     prev_emb_file = prev_emb_file if prev_emb_file.exists() else None
 
-    l = LazyHeadlineVectorizer(path, n_rows=NEWS_N_ROWS, prev_emb_file=prev_emb_file)
-    l.run()
+    lhv = LazyHeadlineVectorizer(path, n_rows=NEWS_N_ROWS, prev_emb_file=prev_emb_file)
+    lhv.run()
 
-    l.lf = add_next_day_return_target(l.lf)
+    lhv.lf = add_next_day_return_target(lhv.lf)
 
     # ['Date', 'open', 'high', 'low', 'close', 'adj close', 'volume', 'Stock_symbol', 'row_index', 'Article_title', 'summary', 'Sentiment_llm_mean_filled', 'Sentiment_llm_median_filled', 'Sentiment_llm_mode_filled', 'tokenized_headline', 'headline_len', 'embedded_headline', 'target_return']
-    schema_names = l.lf.collect_schema().names()
+    schema_names = lhv.lf.collect_schema().names()
+
+    numeric_cols = NUMERIC_FEATURES
+    match LLM_SENTIMENT_MODE:
+        case "mean":
+            numeric_cols.append("Sentiment_llm_mean_filled")
+        case "median":
+            numeric_cols.append("Sentiment_llm_median_filled")
+        case "mode":
+            numeric_cols.append("Sentiment_llm_mode_filled")
 
     available_numeric_features = [c for c in NUMERIC_FEATURES if c in schema_names]
     missing_numeric_features = [c for c in NUMERIC_FEATURES if c not in schema_names]
@@ -899,7 +907,7 @@ if __name__ == "__main__":
         )
 
     stocks = sorted(
-        l.lf.select("Stock_symbol").unique().collect().to_series().to_list()
+        lhv.lf.select("Stock_symbol").unique().collect().to_series().to_list()
     )
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -930,7 +938,7 @@ if __name__ == "__main__":
         ).to(device)
 
     rolling_splits = make_halfyear_rolling_splits(
-        data=l.lf,
+        data=lhv.lf,
         numeric_features=available_numeric_features,
         start_date=ROLLING_START_DATE,
         end_date=ROLLING_END_DATE,
@@ -1020,7 +1028,7 @@ if __name__ == "__main__":
             train_graph_cache=train_graph_cache,
             eval_graph_cache=eval_graph_cache,
             batch_size=BATCH_SIZE,
-            max_headline_len=l.max_headline_len,
+            max_headline_len=lhv.max_headline_len,
             feature_cols=available_numeric_features,
             target_col=TARGET_COL,
             window_size=WINDOW_SIZE,
@@ -1038,10 +1046,10 @@ if __name__ == "__main__":
         lstm_encoder = None
         if USE_LSTM:
             lstm_encoder = LSTM_Encoder(
-                vocab_size=len(l.word2id),
-                embedding_dim=l.vector_size,
+                vocab_size=len(lhv.word2id),
+                embedding_dim=lhv.vector_size,
                 hidden_dim=HIDDEN_DIM,
-                embedding_matrix=l.embedding_matrix,
+                embedding_matrix=lhv.embedding_matrix,
                 num_stocks=len(stocks),
                 stock_emb_dim=HIDDEN_DIM,
                 layer_dim=1,
@@ -1067,17 +1075,25 @@ if __name__ == "__main__":
         counter = 0
         save_path = f"best_{experiment_name}_split_{split_idx}.pt"
 
-        for epoch in range(MAX_EPOCHS):
+        epoch_pbar = tqdm(
+            range(MAX_EPOCHS), desc=f"Split {split_idx} Epochs", unit="epoch"
+        )
+
+        for epoch in epoch_pbar:
             model.train()
             train_loss = 0.0
 
+            # Wrap the DataLoader for batch progress
+            train_pbar = tqdm(
+                train_loader, desc="  Training", leave=False, unit="batch"
+            )
             for (
                 X_text_batch,
                 X_num_batch,
                 Y_batch,
                 stock_batch,
                 graph_seq_batch,
-            ) in train_loader:
+            ) in train_pbar:
                 X_text_batch = X_text_batch.to(device)
                 X_num_batch = X_num_batch.to(device)
                 Y_batch = Y_batch.to(device)
@@ -1095,23 +1111,26 @@ if __name__ == "__main__":
                 loss = criterion(preds, Y_batch)
                 loss.backward()
                 optimizer.step()
-                train_loss += loss.item()
+
+                current_loss = loss.item()
+                train_loss += current_loss
+                train_pbar.set_postfix(loss=f"{current_loss:.4f}")
 
             model.eval()
             val_loss = 0.0
+            val_pbar = tqdm(val_loader, desc="  Validating", leave=False, unit="batch")
             with torch.no_grad():
-                for (
-                    X_text_val,
-                    X_num_val,
-                    Y_val,
-                    stock_val,
-                    graph_seq_val,
-                ) in val_loader:
-                    X_text_val = X_text_val.to(device)
-                    X_num_val = X_num_val.to(device)
-                    Y_val = Y_val.to(device)
-                    stock_val = stock_val.to(device)
-                    graph_seq_val = graph_seq_val.to(device)
+                for X_text_val, X_num_val, Y_val, stock_val, graph_seq_val in val_pbar:
+                    X_text_val, X_num_val, Y_val, stock_val, graph_seq_val = [
+                        t.to(device)
+                        for t in [
+                            X_text_val,
+                            X_num_val,
+                            Y_val,
+                            stock_val,
+                            graph_seq_val,
+                        ]
+                    ]
 
                     preds = model(
                         text_ids=X_text_val,
@@ -1123,8 +1142,9 @@ if __name__ == "__main__":
 
             avg_train_loss = train_loss / max(len(train_loader), 1)
             avg_val_loss = val_loss / max(len(val_loader), 1)
-            print(
-                f"{experiment_name} | Split {split_idx} Epoch {epoch + 1} | Train={avg_train_loss:.6f} | Val={avg_val_loss:.6f}"
+
+            epoch_pbar.set_postfix(
+                train=f"{avg_train_loss:.4f}", val=f"{avg_val_loss:.4f}"
             )
 
             if avg_val_loss < best_val_loss:
@@ -1134,6 +1154,7 @@ if __name__ == "__main__":
             else:
                 counter += 1
                 if counter >= PATIENCE:
+                    tqdm.write(f"Early stopping triggered at epoch {epoch+1}")
                     break
 
         model.load_state_dict(torch.load(save_path, map_location=device))
