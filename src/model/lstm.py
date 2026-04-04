@@ -26,17 +26,17 @@ class LazyHeadlineVectorizer:
         window=5,
         min_count=1,
         n_rows=None,
-        start_date=None,
-        end_date=None,
+        prev_emb_file=None
     ):
         self.parquet_path = parquet_path
         self.col_name = col_name
         self.vector_size = vector_size
         self.window = window
         self.min_count = min_count
-        self.start_date = start_date
-        self.end_date = end_date  # will be used inclusive
+        self.use_prev_emb_file = prev_emb_file
         self.n_rows = n_rows
+        self.stored_parquet_path = f"data/pre-processor/lf_tokenized_{self.n_rows}_rows.parquet"
+        self.stored_w2v_path = f"data/pre-processor/word2vec_{self.n_rows}_rows.model"
 
         self.stop_words = set(stopwords.words("english"))
         self.punctuation = set(string.punctuation)
@@ -47,19 +47,26 @@ class LazyHeadlineVectorizer:
         self.word2id = {}
 
     def load_headlines(self):
-        if self.start_date and self.end_date:
-            assert self.start_date < self.end_date, "Start date >= end date"
-            self.lf = pl.scan_parquet(self.parquet_path)
-            self.lf = self.lf.filter(
-                (pl.col("Date") >= self.start_date) & (pl.col("Date") <= self.end_date)
+        if self.use_prev_emb_file:
+            print("Loading pre-computed .parquet")
+            self.lf = pl.scan_parquet(self.stored_parquet_path, n_rows=None) # use the given file (with embedded_headlines column), use all rows
+            print(self.lf.collect_schema())
+            
+            # Set the max allowed healdine length for lstm to the 95th percentile
+            self.max_headline_len = int(
+                (
+                    self.lf.select("headline_len")
+                    .quantile(0.95, interpolation="linear")
+                    .collect()
+                ).item()
             )
-            self.n_rows = self.lf.select(pl.len()).collect().item()
+            
         else:
             self.lf = pl.scan_parquet(self.parquet_path, n_rows=self.n_rows)
 
         assert (
             self.lf is not None
-        ), "LazyFrame is None. Please enter valid dates or n_rows"
+        ), "LazyFrame is None. Please enter valid n_rows"
 
         print(f"Num Rows: {self.n_rows}")
 
@@ -98,6 +105,8 @@ class LazyHeadlineVectorizer:
                 self.clean_tokenize, return_dtype=pl.List(pl.String)
             )
         ).with_columns(headline_len=pl.col("tokenized_headline").list.len())
+        
+        self.lf.sink_parquet(self.stored_parquet_path) # save lazyFrame with extra tokenized headlines
 
         # Set the max allowed healdine length for lstm to the 95th percentile
         self.max_headline_len = int(
@@ -126,6 +135,10 @@ class LazyHeadlineVectorizer:
 
     # Train Word2Vec lazily
     def train_word2vec(self):
+        if self.use_prev_emb_file:
+            self.model = Word2Vec.load(self.stored_w2v_path) # load the stored w2v model
+            return self.model
+
         sentences = self.HeadlinesIterator(self.lf)
         self.model = Word2Vec(
             sentences=sentences,
@@ -133,7 +146,10 @@ class LazyHeadlineVectorizer:
             window=self.window,
             min_count=self.min_count,
             epochs=3,
+            seed=1,
+            workers=3
         )
+        self.model.save(self.stored_w2v_path)
         return self.model
 
     def build_vocab_id(self):
@@ -176,10 +192,13 @@ class LazyHeadlineVectorizer:
     def run(self):
         print("Loading headlines...")
         self.load_headlines()
-        print("Tokenizing...")
-        self.tokenize_lf()
-        print("Training Word2Vec model...")
-        self.train_word2vec()
+        if not self.use_prev_emb_file:
+            print("Tokenizing...")
+            self.tokenize_lf()
+            print("Training Word2Vec model...")
+            self.train_word2vec()
+        else:
+            print("Loaded pre-computed tokenized headlines and Word2Vec")
         print("Building vocabulary IDs...")
         self.build_vocab_id()
         print("Adding embedded column...")
