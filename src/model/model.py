@@ -15,7 +15,7 @@ import gc
 
 
 # Configuration
-NEWS_N_ROWS = 1000
+NEWS_N_ROWS = None
 
 ROLLING_START_DATE = "2018-01-01"
 ROLLING_END_DATE = "2023-02-28"
@@ -642,9 +642,7 @@ class MDGNNOnlyModel(nn.Module):
     def forward(
         self, text_ids=None, numeric_feats=None, stock_ids=None, graph_seq=None
     ):
-        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
-            graph_seq, return_attention=True
-        )
+        _, graph_repr, _ = self.mdgnn_model.forward(graph_seq, return_attention=True)
         graph_repr = self.graph_proj(graph_repr)
         parts = [graph_repr]
         batch_size = graph_seq.size(0)
@@ -896,15 +894,19 @@ if __name__ == "__main__":
 
     # path = "../../data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
     path = "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
-    l = LazyHeadlineVectorizer(
-        path,
-        n_rows=NEWS_N_ROWS,
-    )
+    prev_emb_file = Path(f"data/pre-processor/lf_tokenized_{NEWS_N_ROWS}_rows.parquet")
+    print(f"Tokenized lf path exists?: {prev_emb_file.exists()}")
+
+    prev_emb_file = prev_emb_file if prev_emb_file.exists() else None
+
+    l = LazyHeadlineVectorizer(path, n_rows=NEWS_N_ROWS, prev_emb_file=prev_emb_file)
     l.run()
 
     l.lf = add_next_day_return_target(l.lf)
 
+    # ['Date', 'open', 'high', 'low', 'close', 'adj close', 'volume', 'Stock_symbol', 'row_index', 'Article_title', 'summary', 'Sentiment_llm_mean_filled', 'Sentiment_llm_median_filled', 'Sentiment_llm_mode_filled', 'tokenized_headline', 'headline_len', 'embedded_headline', 'target_return']
     schema_names = l.lf.collect_schema().names()
+
     available_numeric_features = [c for c in NUMERIC_FEATURES if c in schema_names]
     missing_numeric_features = [c for c in NUMERIC_FEATURES if c not in schema_names]
 
