@@ -72,13 +72,13 @@ CUSIP_MAPPING_FILE = "CUSIP.csv"
 
 
 # Helper functions
-def get_experiment_name(use_lstm: bool, use_mdgnn: bool) -> str:
+def get_experiment_name(use_lstm: bool, use_mdgnn: bool, llm_mode: str) -> str:
     if use_lstm and use_mdgnn:
-        return "lstm_mdgnn"
+        return f"lstm_mdgnn_llm_{llm_mode}"
     if use_lstm and not use_mdgnn:
-        return "lstm_only"
+        return f"lstm_only_llm_{llm_mode}"
     if use_mdgnn and not use_lstm:
-        return "mdgnn_only"
+        return f"mdgnn_only_llm_{llm_mode}"
     raise ValueError("USE_LSTM and USE_MDGNN cannot both be False.")
 
 
