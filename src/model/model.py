@@ -585,7 +585,7 @@ class MDGNNOnlyModel(nn.Module):
         )
 
     def forward(self, text_ids=None, numeric_feats=None, stock_ids=None, graph_seq=None):
-        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(graph_seq, return_attention=True)
+        _, graph_repr, _ = self.mdgnn_model.forward(graph_seq, return_attention=True)
         graph_repr = self.graph_proj(graph_repr)
         parts = [graph_repr]
         batch_size = graph_seq.size(0)
@@ -627,7 +627,7 @@ class LSTM_MDGNN_Fusion(nn.Module):
 
     def forward(self, text_ids, numeric_feats, stock_ids, graph_seq):
         text_repr = self.lstm_encoder(text_ids, stock_ids)
-        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(graph_seq, return_attention=True)
+        _, graph_repr, _ = self.mdgnn_model.forward(graph_seq, return_attention=True, lstm_feature=text_repr)
         graph_repr = self.graph_proj(graph_repr)
 
         parts = [text_repr, graph_repr]
