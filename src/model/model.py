@@ -485,70 +485,54 @@ class NewsGraphDataset(Dataset):
         window_size: int = 10,
         use_graph: bool = True,
     ):
-        self.samples = []
-        self.window_size = window_size
-        self.graph_hidden_dim = graph_hidden_dim
-        self.use_graph = use_graph
-        self.feature_cols = feature_cols
-
+        self.valid_rows = []
         for row in rows:
-            target = row.get(target_col)
-            if target is None:
-                continue
+            if row.get(target_col) is not None and row.get("Stock_symbol") in stock2id:
+                self.valid_rows.append(row)
 
-            stock_symbol = row.get("Stock_symbol")
-            if stock_symbol not in stock2id:
-                continue
-
-            text_ids = row.get(embedding_col)
-            if text_ids is None:
-                text_ids = [0] * max_headline_len
-            else:
-                if len(text_ids) < max_headline_len:
-                    text_ids = text_ids + [0] * (max_headline_len - len(text_ids))
-                else:
-                    text_ids = text_ids[:max_headline_len]
-
-            numeric_feats = []
-            for col in feature_cols:
-                val = row.get(col)
-                if val is None:
-                    val = 0.0
-                numeric_feats.append(float(val))
-
-            if self.use_graph and graph_cache is not None:
-                date_value = row.get("Date")
-                graph_seq = graph_cache.lookup_window(
-                    date_value,
-                    stock_symbol,
-                    window_size=window_size,
-                )
-            else:
-                graph_seq = torch.zeros(
-                    window_size, graph_hidden_dim, dtype=torch.float32
-                )
-
-            self.samples.append(
-                {
-                    "text_ids": torch.tensor(text_ids, dtype=torch.long),
-                    "numeric_feats": torch.tensor(numeric_feats, dtype=torch.float32),
-                    "target": torch.tensor(float(target), dtype=torch.float32),
-                    "stock_id": torch.tensor(stock2id[stock_symbol], dtype=torch.long),
-                    "graph_seq": graph_seq,
-                }
-            )
+        self.stock2id = stock2id
+        self.graph_cache = graph_cache
+        self.embedding_col = embedding_col
+        self.feature_cols = feature_cols
+        self.target_col = target_col
+        self.max_headline_len = max_headline_len
+        self.graph_hidden_dim = graph_hidden_dim
+        self.window_size = window_size
+        self.use_graph = use_graph
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.valid_rows)
 
     def __getitem__(self, idx):
-        s = self.samples[idx]
+        row = self.valid_rows[idx]
+        stock_symbol = row.get("Stock_symbol")
+
+        text_ids = row.get(self.embedding_col)
+        if text_ids is None:
+            text_ids = [0] * self.max_headline_len
+        else:
+            text_ids = text_ids[: self.max_headline_len]
+            text_ids += [0] * (self.max_headline_len - len(text_ids))
+
+        numeric_feats = [float(row.get(col, 0.0)) for col in self.feature_cols]
+
+        if self.use_graph and self.graph_cache is not None:
+            graph_seq = self.graph_cache.lookup_window(
+                row.get("Date"),
+                stock_symbol,
+                window_size=self.window_size,
+            )
+        else:
+            graph_seq = torch.zeros(
+                self.window_size, self.graph_hidden_dim, dtype=torch.float32
+            )
+
         return (
-            s["text_ids"],
-            s["numeric_feats"],
-            s["target"],
-            s["stock_id"],
-            s["graph_seq"],
+            torch.tensor(text_ids, dtype=torch.long),
+            torch.tensor(numeric_feats, dtype=torch.float32),
+            torch.tensor(float(row[self.target_col]), dtype=torch.float32),
+            torch.tensor(self.stock2id[stock_symbol], dtype=torch.long),
+            graph_seq,
         )
 
 
@@ -688,9 +672,7 @@ class LSTM_MDGNN_Fusion(nn.Module):
 
     def forward(self, text_ids, numeric_feats, stock_ids, graph_seq):
         text_repr = self.lstm_encoder(text_ids, stock_ids)
-        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
-            graph_seq, return_attention=True
-        )
+        _, graph_repr, _ = self.mdgnn_model.forward(graph_seq, return_attention=True)
         graph_repr = self.graph_proj(graph_repr)
 
         parts = [text_repr, graph_repr]
