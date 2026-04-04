@@ -28,7 +28,7 @@ HIDDEN_DIM = 128
 GNN_LAYERS = 2
 WINDOW_SIZE = 10
 MAX_EPOCHS = 500
-PATIENCE = 20
+PATIENCE = 200
 BATCH_SIZE = 8
 DROPOUT = 0.1
 MAX_SPLITS = None
@@ -1156,6 +1156,7 @@ if __name__ == "__main__":
                 counter += 1
                 if counter >= PATIENCE:
                     tqdm.write(f"Early stopping triggered at epoch {epoch+1}")
+                    torch.save(model.state_dict(), save_path)
                     break
 
         model.load_state_dict(torch.load(save_path, map_location=device))
