@@ -411,7 +411,10 @@ class SnapshotGraphFeatureCache:
                     if mapped_symbol != "":
                         quarter_cache[mapped_symbol] = emb
 
-                self.available_quarters = sorted(self.cache.keys())
+                self.cache[quarter_id] = quarter_cache
+
+        self.available_quarters = sorted(self.cache.keys())
+        self.num_nonempty_quarters = sum(1 for q in self.cache.values() if len(q) > 0)
 
         for q_id in self.available_quarters:
             year = int(q_id.split("Q")[0])
@@ -872,7 +875,7 @@ def build_loaders_for_split(
     )
 
     return (
-        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True),
+        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=False),
         DataLoader(val_dataset, batch_size=batch_size, shuffle=False),
         DataLoader(test_dataset, batch_size=batch_size, shuffle=False),
     )
@@ -904,7 +907,7 @@ if __name__ == "__main__":
     # ['Date', 'open', 'high', 'low', 'close', 'adj close', 'volume', 'Stock_symbol', 'row_index', 'Article_title', 'summary', 'Sentiment_llm_mean_filled', 'Sentiment_llm_median_filled', 'Sentiment_llm_mode_filled', 'tokenized_headline', 'headline_len', 'embedded_headline', 'target_return']
     schema_names = lhv.lf.collect_schema().names()
 
-    numeric_cols = NUMERIC_FEATURES
+    numeric_cols = list(NUMERIC_FEATURES)
     match LLM_SENTIMENT_MODE:
         case "mean":
             numeric_cols.append("Sentiment_llm_mean_filled")
@@ -913,8 +916,8 @@ if __name__ == "__main__":
         case "mode":
             numeric_cols.append("Sentiment_llm_mode_filled")
 
-    available_numeric_features = [c for c in NUMERIC_FEATURES if c in schema_names]
-    missing_numeric_features = [c for c in NUMERIC_FEATURES if c not in schema_names]
+    available_numeric_features = [c for c in numeric_cols if c in schema_names]
+    missing_numeric_features = [c for c in numeric_cols if c not in schema_names]
 
     if missing_numeric_features:
         print(
@@ -1036,7 +1039,11 @@ if __name__ == "__main__":
             print(
                 f"Split {split_idx} graph files | "
                 f"train={train_graph_file} | val/test={eval_graph_file} | "
-                f"loaded_now={list(loaded_graph_caches.keys())}"
+                f"loaded_now={list(loaded_graph_caches.keys())} | "
+                f"train_quarters={len(train_graph_cache.available_quarters)} | "
+                f"train_nonempty={train_graph_cache.num_nonempty_quarters} | "
+                f"eval_quarters={len(eval_graph_cache.available_quarters)} | "
+                f"eval_nonempty={eval_graph_cache.num_nonempty_quarters}"
             )
 
         train_loader, val_loader, test_loader = build_loaders_for_split(
@@ -1194,7 +1201,7 @@ if __name__ == "__main__":
                 "train_loss": train_losses,
                 "val_loss": val_losses,
             })
-            loss_path = output_dir / f"losses_{experiment_name}_split_{split_idx}"
+            loss_path = output_dir / f"losses_{experiment_name}_split_{split_idx}.csv"
             loss_df.to_csv(loss_path)
 
             if avg_val_loss < best_val_loss:
@@ -1266,3 +1273,5 @@ if __name__ == "__main__":
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+            
