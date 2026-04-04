@@ -335,6 +335,7 @@ class SnapshotGraphFeatureCache:
         self.device = device
         self.cache = {}
         self.available_quarters = []
+        self.quarter_metadata = []
 
         raw_quarters = load_raw_snapshot_data(snapshot_files)
         mdgnn_model = mdgnn_model.to(device)
@@ -406,9 +407,16 @@ class SnapshotGraphFeatureCache:
                     if mapped_symbol != "":
                         quarter_cache[mapped_symbol] = emb
 
-                self.cache[quarter_id] = quarter_cache
+                self.available_quarters = sorted(self.cache.keys())
 
-        self.available_quarters = sorted(self.cache.keys())
+        for q_id in self.available_quarters:
+            year = int(q_id.split("Q")[0])
+            q_num = int(q_id.split("Q")[1])
+            q_end = pd.Timestamp(
+                year=year, month=q_num * 3, day=1
+            ) + pd.offsets.MonthEnd(0)
+
+            self.quarter_metadata.append((q_end, q_id))
 
     def lookup(self, date_value, stock_symbol):
         q = quarter_key_from_date(date_value)
@@ -426,28 +434,24 @@ class SnapshotGraphFeatureCache:
         target_date = pd.Timestamp(date_value).normalize()
         target_quarter = quarter_key_from_date(target_date)
 
-        quarter_ends = []
-        for quarter_id in self.available_quarters:
-            year = int(quarter_id.split("Q")[0])
-            quarter = int(quarter_id.split("Q")[1])
-            end_month = quarter * 3
-            quarter_end = pd.Timestamp(
-                year=year, month=end_month, day=1
-            ) + pd.offsets.MonthEnd(0)
-            if quarter_end <= target_date or quarter_id == target_quarter:
-                quarter_ends.append((quarter_end, quarter_id))
+        quarter_ends = [
+            (q_end, q_id)
+            for q_end, q_id in self.quarter_metadata
+            if q_end <= target_date or q_id == target_quarter
+        ]
 
-        if len(quarter_ends) == 0:
+        if not quarter_ends:
             return torch.zeros(window_size, self.hidden_dim, dtype=torch.float32)
 
-        quarter_ends = sorted(quarter_ends, key=lambda x: x[0])
+        quarter_ends.sort(key=lambda x: x[0])
         chosen_quarters = [q_id for _, q_id in quarter_ends[-window_size:]]
+        candidates = _candidate_stock_keys(stock_symbol)
 
         seq = []
         for q_id in chosen_quarters:
             quarter_cache = self.cache.get(q_id, {})
             found = None
-            for key in _candidate_stock_keys(stock_symbol):
+            for key in candidates:
                 if key in quarter_cache:
                     found = quarter_cache[key]
                     break
@@ -459,10 +463,7 @@ class SnapshotGraphFeatureCache:
 
         if len(seq) < window_size:
             pad_len = window_size - len(seq)
-            pads = [
-                torch.zeros(self.hidden_dim, dtype=torch.float32)
-                for _ in range(pad_len)
-            ]
+            pads = [torch.zeros(self.hidden_dim, dtype=torch.float32)] * pad_len
             seq = pads + seq
 
         return torch.stack(seq, dim=0)
@@ -1073,7 +1074,7 @@ if __name__ == "__main__":
 
         best_val_loss = float("inf")
         counter = 0
-        save_path = f"best_{experiment_name}_split_{split_idx}.pt"
+        save_path = f"data/model/output/best_{experiment_name}_split_{split_idx}.pt"
 
         epoch_pbar = tqdm(
             range(MAX_EPOCHS), desc=f"Split {split_idx} Epochs", unit="epoch"
