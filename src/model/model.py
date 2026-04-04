@@ -1188,6 +1188,15 @@ if __name__ == "__main__":
                 train=f"{avg_train_loss:.4f}", val=f"{avg_val_loss:.4f}"
             )
 
+            # STore train and val losses
+            loss_df = pd.DataFrame({
+                "epoch": range(len(train_losses)),
+                "train_loss": train_losses,
+                "val_loss": val_losses,
+            })
+            loss_path = output_dir / f"losses_{experiment_name}_split_{split_idx}"
+            loss_df.to_csv(loss_path)
+
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
                 counter = 0
@@ -1197,15 +1206,6 @@ if __name__ == "__main__":
                 if counter >= PATIENCE:
                     tqdm.write(f"Early stopping triggered at epoch {epoch+1}")
                     break
-
-        # STore train and val losses
-        loss_df = pd.DataFrame({
-            "epoch": range(len(train_losses)),
-            "train_loss": train_losses,
-            "val_loss": val_losses,
-        })
-        loss_path = output_dir / f"losses_{experiment_name}_split_{split_idx}"
-        loss_df.to_csv(loss_path)
 
         model.load_state_dict(torch.load(save_path, map_location=device))
         model.eval()
