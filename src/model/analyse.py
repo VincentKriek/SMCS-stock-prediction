@@ -1,4 +1,4 @@
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -24,24 +24,27 @@ output_dir = Path("data/model/output")
 for s in range(1, num_splits + 1):
     # csv_path = output_dir / f"preds_{experiment_name}_split_{s}.csv"
     # df = pd.read_csv(csv_path)
+
+    # TODO: remove this when using real results
     n = 10
-    df = pd.DataFrame({
+    res_df = pd.DataFrame({
         "Date": pd.date_range(start="2024-01-01", periods=n, freq="D"),
         "Stock_symbol": np.random.choice(["A", "B", "C"], size=n),
         "target_return": np.random.rand(n),
         "prediction": np.random.rand(n),
     })
-    print(df)
+    print(res_df)
 
-    groups = df.groupby("Stock_symbol")
-    mse = mean_squared_error(y_true=df["target_return"], y_pred=df["prediction"])
-    r2 = r2_score(y_true=df["target_return"], y_pred=df["prediction"])
+    mse = mean_squared_error(y_true=res_df["target_return"], y_pred=res_df["prediction"])
+    r2 = r2_score(y_true=res_df["target_return"], y_pred=res_df["prediction"])
 
     print(f"Overall scores (Split {s})")
     print(f"- MSE: {mse:.6f}")
-    print(f"- R² : {r2:.6f}")
+    print(f"- R² : {r2:.6f}\n")
 
+    # Print results per stock
     results = []
+    groups = res_df.groupby("Stock_symbol")
     for stock, group in groups:
         group_mse = mean_squared_error(y_true=group["target_return"], y_pred=group["prediction"])
         group_r2 = r2_score(y_true=group["target_return"], y_pred=group["prediction"])
@@ -52,8 +55,50 @@ for s in range(1, num_splits + 1):
             "R2": group_r2
         })
     results = pd.DataFrame(results)
-
+    print("Metrics per Stock_symbol:")
     print(results)
+
+    # Print results per day
+    results = []
+    groups = res_df.groupby("Date")
+    for date, group in groups:
+        group_mse = mean_squared_error(y_true=group["target_return"], y_pred=group["prediction"])
+        group_r2 = r2_score(y_true=group["target_return"], y_pred=group["prediction"]) # note that r2 needs >= 2 values to not be NaN
+
+        results.append({
+            "Date": date,
+            "MSE": group_mse,
+            "R2": group_r2
+        })
+    results = pd.DataFrame(results)
+    print("Metrics per Date:")
+    print(results)
+
+    # Plot losses over epochs
+    # loss_df = pd.read_csv(f"losses_{experiment_name}_split_{s}")
+
+    # TODO: remove this when using real results
+    n = 25
+    loss_df = pd.DataFrame({
+        "epoch": range(n),
+        "train_loss": np.random.rand(n),
+        "val_loss": np.random.rand(n),
+    })
+    print(loss_df)
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(loss_df["epoch"], loss_df["train_loss"], label="Train Loss")
+    plt.plot(loss_df["epoch"], loss_df["val_loss"], label="Val Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Train vs Val Loss")
+    plt.legend()
+    plt.show()
+
+
+    
+
+    
 
 
 

@@ -20,6 +20,7 @@ dependencies = [
     "gensim>=4.4.0",
     "pyarrow>=23.0.1",
     "scikit-learn>=1.8.0",
+    "matplotlib>=3.10.8",
 ]
 
 [project.optional-dependencies]
