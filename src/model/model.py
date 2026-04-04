@@ -882,7 +882,7 @@ def build_loaders_for_split(
 if __name__ == "__main__":
     # torch.autograd.set_detect_anomaly(True)  # for debug
 
-    experiment_name = get_experiment_name(USE_LSTM, USE_MDGNN)
+    experiment_name = get_experiment_name(USE_LSTM, USE_MDGNN, LLM_SENTIMENT_MODE)
     print(f"Running experiment mode: {experiment_name}")
     print(f"Using numeric features: {NUMERIC_FEATURES}")
     print(f"Using LLM sentiment aggregation mode: {LLM_SENTIMENT_MODE}")
