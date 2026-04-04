@@ -14,7 +14,6 @@ import re
 import gc
 
 
-
 # Configuration
 NEWS_N_ROWS = 1000
 
@@ -51,7 +50,7 @@ NUMERIC_FEATURES = [
 USE_LSTM = True
 USE_MDGNN = True
 
-
+GRAPH_SPLIT_BASE_PATH = "data/model/graphs"
 GRAPH_SPLIT_FILES = [
     "graphs_split_1.pt",
     "graphs_split_2.pt",
@@ -68,7 +67,6 @@ GRAPH_SPLIT_FILES = [
 ]
 
 CUSIP_MAPPING_FILE = "CUSIP.csv"
-
 
 
 # Helper functions
@@ -109,7 +107,11 @@ def _normalize_edge_value(edge_value):
 
     edge_index = _to_tensor(edge_value[0], dtype=torch.long)
     edge_attr_raw = edge_value[1]
-    edge_attr = None if edge_attr_raw is None else _to_tensor(edge_attr_raw, dtype=torch.float32)
+    edge_attr = (
+        None
+        if edge_attr_raw is None
+        else _to_tensor(edge_attr_raw, dtype=torch.float32)
+    )
     return (edge_index, edge_attr)
 
 
@@ -127,7 +129,9 @@ def normalize_snapshot_file_list(snapshot_files) -> list[str]:
 def get_split_graph_files(split_idx: int, graph_split_files):
     file_list = normalize_snapshot_file_list(graph_split_files)
     if len(file_list) < 2:
-        raise ValueError("At least two graph split files are required when USE_MDGNN=True.")
+        raise ValueError(
+            "At least two graph split files are required when USE_MDGNN=True."
+        )
 
     train_pos = split_idx - 1
     eval_pos = split_idx
@@ -148,9 +152,17 @@ def infer_graph_dims_from_snapshot_files(snapshot_files):
     first_quarter = next(iter(raw_quarters.values()))
     stock_feat = _to_tensor(first_quarter.get("stock_feat"), dtype=torch.float32)
     bank_feat_raw = first_quarter.get("bank_feat")
-    bank_feat = None if bank_feat_raw is None else _to_tensor(bank_feat_raw, dtype=torch.float32)
+    bank_feat = (
+        None
+        if bank_feat_raw is None
+        else _to_tensor(bank_feat_raw, dtype=torch.float32)
+    )
     industry_feat_raw = first_quarter.get("industry_feat")
-    industry_feat = None if industry_feat_raw is None else _to_tensor(industry_feat_raw, dtype=torch.float32)
+    industry_feat = (
+        None
+        if industry_feat_raw is None
+        else _to_tensor(industry_feat_raw, dtype=torch.float32)
+    )
 
     edges = first_quarter.get("edges", {})
     edge_dims = {}
@@ -254,9 +266,10 @@ def _map_graph_id_to_stock_symbol(graph_id, graph_cusip=None) -> str:
 
 GRAPH_ID_TO_SYMBOL = load_cusip_symbol_mapping(CUSIP_MAPPING_FILE)
 
+
 # Graph snapshot loading
 def load_single_snapshot_file(snapshot_file: str):
-    path = Path(snapshot_file)
+    path = Path(GRAPH_SPLIT_BASE_PATH).joinpath(snapshot_file)
     if not path.exists():
         raise FileNotFoundError(f"Graph snapshot file not found: {snapshot_file}")
 
@@ -266,11 +279,17 @@ def load_single_snapshot_file(snapshot_file: str):
     else:
         raise ValueError(f"Graph snapshot file must be .pt or .pth: {snapshot_file}")
 
-    if isinstance(loaded, dict) and "cache" in loaded and isinstance(loaded["cache"], dict):
+    if (
+        isinstance(loaded, dict)
+        and "cache" in loaded
+        and isinstance(loaded["cache"], dict)
+    ):
         loaded = loaded["cache"]
 
     if not isinstance(loaded, dict):
-        raise ValueError(f"Graph snapshot file must contain a dict of quarter snapshots: {snapshot_file}")
+        raise ValueError(
+            f"Graph snapshot file must contain a dict of quarter snapshots: {snapshot_file}"
+        )
 
     normalized = {}
     for quarter_id, snapshot in loaded.items():
@@ -293,7 +312,6 @@ def load_raw_snapshot_data(snapshot_files):
                 )
             merged[quarter_id] = snapshot
     return merged
-
 
 
 class EmptyGraphFeatureCache:
@@ -332,10 +350,18 @@ class SnapshotGraphFeatureCache:
                 stock_feat = stock_feat.to(device)
 
                 bank_feat_raw = snap.get("bank_feat")
-                bank_feat = None if bank_feat_raw is None else _to_tensor(bank_feat_raw, dtype=torch.float32).to(device)
+                bank_feat = (
+                    None
+                    if bank_feat_raw is None
+                    else _to_tensor(bank_feat_raw, dtype=torch.float32).to(device)
+                )
 
                 industry_feat_raw = snap.get("industry_feat")
-                industry_feat = None if industry_feat_raw is None else _to_tensor(industry_feat_raw, dtype=torch.float32).to(device)
+                industry_feat = (
+                    None
+                    if industry_feat_raw is None
+                    else _to_tensor(industry_feat_raw, dtype=torch.float32).to(device)
+                )
 
                 raw_edges = snap.get("edges", {})
                 edges = {}
@@ -350,12 +376,16 @@ class SnapshotGraphFeatureCache:
                             None if edge_attr is None else edge_attr.to(device),
                         )
 
-                stock_emb = mdgnn_model.encode_snapshot(
-                    stock_feat=stock_feat,
-                    bank_feat=bank_feat,
-                    industry_feat=industry_feat,
-                    edges=edges,
-                ).detach().cpu()
+                stock_emb = (
+                    mdgnn_model.encode_snapshot(
+                        stock_feat=stock_feat,
+                        bank_feat=bank_feat,
+                        industry_feat=industry_feat,
+                        edges=edges,
+                    )
+                    .detach()
+                    .cpu()
+                )
 
                 quarter_cache = {}
 
@@ -365,8 +395,14 @@ class SnapshotGraphFeatureCache:
                 for idx in range(len(graph_stock_ids)):
                     emb = stock_emb[idx].float()
 
-                    graph_id = graph_stock_ids[idx] if idx < len(graph_stock_ids) else None
-                    graph_cusip = graph_stock_cusips[idx] if idx < len(graph_stock_cusips) else None
+                    graph_id = (
+                        graph_stock_ids[idx] if idx < len(graph_stock_ids) else None
+                    )
+                    graph_cusip = (
+                        graph_stock_cusips[idx]
+                        if idx < len(graph_stock_cusips)
+                        else None
+                    )
 
                     mapped_symbol = _map_graph_id_to_stock_symbol(graph_id, graph_cusip)
                     if mapped_symbol != "":
@@ -397,7 +433,9 @@ class SnapshotGraphFeatureCache:
             year = int(quarter_id.split("Q")[0])
             quarter = int(quarter_id.split("Q")[1])
             end_month = quarter * 3
-            quarter_end = pd.Timestamp(year=year, month=end_month, day=1) + pd.offsets.MonthEnd(0)
+            quarter_end = pd.Timestamp(
+                year=year, month=end_month, day=1
+            ) + pd.offsets.MonthEnd(0)
             if quarter_end <= target_date or quarter_id == target_quarter:
                 quarter_ends.append((quarter_end, quarter_id))
 
@@ -423,11 +461,13 @@ class SnapshotGraphFeatureCache:
 
         if len(seq) < window_size:
             pad_len = window_size - len(seq)
-            pads = [torch.zeros(self.hidden_dim, dtype=torch.float32) for _ in range(pad_len)]
+            pads = [
+                torch.zeros(self.hidden_dim, dtype=torch.float32)
+                for _ in range(pad_len)
+            ]
             seq = pads + seq
 
         return torch.stack(seq, dim=0)
-
 
 
 # Dataset
@@ -484,15 +524,19 @@ class NewsGraphDataset(Dataset):
                     window_size=window_size,
                 )
             else:
-                graph_seq = torch.zeros(window_size, graph_hidden_dim, dtype=torch.float32)
+                graph_seq = torch.zeros(
+                    window_size, graph_hidden_dim, dtype=torch.float32
+                )
 
-            self.samples.append({
-                "text_ids": torch.tensor(text_ids, dtype=torch.long),
-                "numeric_feats": torch.tensor(numeric_feats, dtype=torch.float32),
-                "target": torch.tensor(float(target), dtype=torch.float32),
-                "stock_id": torch.tensor(stock2id[stock_symbol], dtype=torch.long),
-                "graph_seq": graph_seq,
-            })
+            self.samples.append(
+                {
+                    "text_ids": torch.tensor(text_ids, dtype=torch.long),
+                    "numeric_feats": torch.tensor(numeric_feats, dtype=torch.float32),
+                    "target": torch.tensor(float(target), dtype=torch.float32),
+                    "stock_id": torch.tensor(stock2id[stock_symbol], dtype=torch.long),
+                    "graph_seq": graph_seq,
+                }
+            )
 
     def __len__(self):
         return len(self.samples)
@@ -510,7 +554,9 @@ class NewsGraphDataset(Dataset):
 
 # Models
 class NumericFeatureProjector(nn.Module):
-    def __init__(self, num_numeric_features: int, hidden_dim: int = 128, dropout: float = 0.1):
+    def __init__(
+        self, num_numeric_features: int, hidden_dim: int = 128, dropout: float = 0.1
+    ):
         super().__init__()
         self.num_numeric_features = num_numeric_features
         if num_numeric_features > 0:
@@ -522,7 +568,12 @@ class NumericFeatureProjector(nn.Module):
         else:
             self.proj = None
 
-    def forward(self, numeric_feats: Optional[torch.Tensor], batch_size: int, device: torch.device):
+    def forward(
+        self,
+        numeric_feats: Optional[torch.Tensor],
+        batch_size: int,
+        device: torch.device,
+    ):
         if self.proj is None:
             return torch.zeros(batch_size, 0, device=device)
         return self.proj(numeric_feats)
@@ -538,7 +589,9 @@ class LSTMOnlyModel(nn.Module):
     ):
         super().__init__()
         self.lstm_encoder = lstm_encoder
-        self.numeric_proj = NumericFeatureProjector(num_numeric_features, hidden_dim, dropout)
+        self.numeric_proj = NumericFeatureProjector(
+            num_numeric_features, hidden_dim, dropout
+        )
         fusion_input_dim = hidden_dim + (hidden_dim if num_numeric_features > 0 else 0)
 
         self.head = nn.Sequential(
@@ -569,7 +622,9 @@ class MDGNNOnlyModel(nn.Module):
     ):
         super().__init__()
         self.mdgnn_model = mdgnn_model
-        self.numeric_proj = NumericFeatureProjector(num_numeric_features, hidden_dim, dropout)
+        self.numeric_proj = NumericFeatureProjector(
+            num_numeric_features, hidden_dim, dropout
+        )
         self.graph_proj = nn.Sequential(
             nn.Linear(graph_hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -584,8 +639,12 @@ class MDGNNOnlyModel(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
-    def forward(self, text_ids=None, numeric_feats=None, stock_ids=None, graph_seq=None):
-        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(graph_seq, return_attention=True)
+    def forward(
+        self, text_ids=None, numeric_feats=None, stock_ids=None, graph_seq=None
+    ):
+        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
+            graph_seq, return_attention=True
+        )
         graph_repr = self.graph_proj(graph_repr)
         parts = [graph_repr]
         batch_size = graph_seq.size(0)
@@ -610,13 +669,17 @@ class LSTM_MDGNN_Fusion(nn.Module):
         super().__init__()
         self.lstm_encoder = lstm_encoder
         self.mdgnn_model = mdgnn_model
-        self.numeric_proj = NumericFeatureProjector(num_numeric_features, hidden_dim, dropout)
+        self.numeric_proj = NumericFeatureProjector(
+            num_numeric_features, hidden_dim, dropout
+        )
         self.graph_proj = nn.Sequential(
             nn.Linear(graph_hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
         )
-        fusion_input_dim = hidden_dim + hidden_dim + (hidden_dim if num_numeric_features > 0 else 0)
+        fusion_input_dim = (
+            hidden_dim + hidden_dim + (hidden_dim if num_numeric_features > 0 else 0)
+        )
 
         self.fusion_head = nn.Sequential(
             nn.Linear(fusion_input_dim, hidden_dim),
@@ -627,7 +690,9 @@ class LSTM_MDGNN_Fusion(nn.Module):
 
     def forward(self, text_ids, numeric_feats, stock_ids, graph_seq):
         text_repr = self.lstm_encoder(text_ids, stock_ids)
-        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(graph_seq, return_attention=True)
+        _, graph_repr, _ = self.mdgnn_model.forward_from_sequence(
+            graph_seq, return_attention=True
+        )
         graph_repr = self.graph_proj(graph_repr)
 
         parts = [text_repr, graph_repr]
@@ -700,18 +765,21 @@ def make_halfyear_rolling_splits(
     test_months: int = 6,
 ):
     schema_names = data.collect_schema().names()
-    needed_cols = ["Date", "Stock_symbol", "embedded_headline", TARGET_COL] + numeric_features
+    needed_cols = [
+        "Date",
+        "Stock_symbol",
+        "embedded_headline",
+        TARGET_COL,
+    ] + numeric_features
     used_cols = [c for c in needed_cols if c in schema_names]
 
     start_dt = pd.Timestamp(start_date)
     end_dt = pd.Timestamp(end_date)
 
     df = (
-        data
-        .select(used_cols)
+        data.select(used_cols)
         .filter(
-            (pl.col("Date") >= pl.lit(start_dt)) &
-            (pl.col("Date") <= pl.lit(end_dt))
+            (pl.col("Date") >= pl.lit(start_dt)) & (pl.col("Date") <= pl.lit(end_dt))
         )
         .sort("Date")
         .collect(engine="streaming")
@@ -727,7 +795,9 @@ def make_halfyear_rolling_splits(
     anchor = start_dt
     while True:
         train_start = anchor
-        train_end = train_start + pd.DateOffset(months=train_months) - pd.Timedelta(days=1)
+        train_end = (
+            train_start + pd.DateOffset(months=train_months) - pd.Timedelta(days=1)
+        )
         val_start = train_end + pd.Timedelta(days=1)
         val_end = val_start + pd.DateOffset(months=val_months) - pd.Timedelta(days=1)
         test_start = val_end + pd.Timedelta(days=1)
@@ -743,11 +813,13 @@ def make_halfyear_rolling_splits(
         test_df = df[(df["Date"] >= test_start) & (df["Date"] <= test_end)].copy()
 
         if len(train_df) > 0 and len(val_df) > 0 and len(test_df) > 0:
-            splits.append({
-                "train_rows": train_df.to_dict("records"),
-                "val_rows": val_df.to_dict("records"),
-                "test_rows": test_df.to_dict("records"),
-            })
+            splits.append(
+                {
+                    "train_rows": train_df.to_dict("records"),
+                    "val_rows": val_df.to_dict("records"),
+                    "test_rows": test_df.to_dict("records"),
+                }
+            )
 
         anchor = anchor + pd.DateOffset(months=test_months)
         if anchor > end_dt:
@@ -814,7 +886,6 @@ def build_loaders_for_split(
     )
 
 
-
 # Main
 if __name__ == "__main__":
     experiment_name = get_experiment_name(USE_LSTM, USE_MDGNN)
@@ -838,9 +909,13 @@ if __name__ == "__main__":
     missing_numeric_features = [c for c in NUMERIC_FEATURES if c not in schema_names]
 
     if missing_numeric_features:
-        print(f"Warning: these numeric features were not found and will be ignored: {missing_numeric_features}")
+        print(
+            f"Warning: these numeric features were not found and will be ignored: {missing_numeric_features}"
+        )
 
-    stocks = sorted(l.lf.select("Stock_symbol").unique().collect().to_series().to_list())
+    stocks = sorted(
+        l.lf.select("Stock_symbol").unique().collect().to_series().to_list()
+    )
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -849,9 +924,13 @@ if __name__ == "__main__":
     if USE_MDGNN:
         ordered_graph_files = normalize_snapshot_file_list(GRAPH_SPLIT_FILES)
         if len(ordered_graph_files) < 2:
-            raise ValueError("At least two graph split files are required when USE_MDGNN=True.")
+            raise ValueError(
+                "At least two graph split files are required when USE_MDGNN=True."
+            )
 
-        stock_in_dim, bank_in_dim, industry_in_dim, edge_dims = infer_graph_dims_from_snapshot_files(ordered_graph_files[0])
+        stock_in_dim, bank_in_dim, industry_in_dim, edge_dims = (
+            infer_graph_dims_from_snapshot_files(ordered_graph_files[0])
+        )
 
         mdgnn = MDGNN(
             stock_in_dim=stock_in_dim,
@@ -881,11 +960,15 @@ if __name__ == "__main__":
 
     if MAX_SPLITS is not None:
         rolling_splits = rolling_splits[:MAX_SPLITS]
-        print(f"Iteration limit enabled: only running first {len(rolling_splits)} split(s).")
+        print(
+            f"Iteration limit enabled: only running first {len(rolling_splits)} split(s)."
+        )
 
     if USE_MDGNN:
         max_supported_splits = len(normalize_snapshot_file_list(GRAPH_SPLIT_FILES)) - 1
-        print(f"Graph-based iterations available from provided files: {max_supported_splits}")
+        print(
+            f"Graph-based iterations available from provided files: {max_supported_splits}"
+        )
         if len(rolling_splits) > max_supported_splits:
             print(
                 f"Warning: {len(rolling_splits)} data splits were created, but only {max_supported_splits} graph-based "
@@ -902,9 +985,13 @@ if __name__ == "__main__":
 
         if USE_MDGNN:
             try:
-                train_graph_file, eval_graph_file = get_split_graph_files(split_idx, GRAPH_SPLIT_FILES)
+                train_graph_file, eval_graph_file = get_split_graph_files(
+                    split_idx, GRAPH_SPLIT_FILES
+                )
             except IndexError:
-                print(f"Split {split_idx} does not have enough graph files available. Skipping.")
+                print(
+                    f"Split {split_idx} does not have enough graph files available. Skipping."
+                )
                 continue
 
             required_files = {train_graph_file, eval_graph_file}
@@ -955,7 +1042,11 @@ if __name__ == "__main__":
             use_graph=USE_MDGNN,
         )
 
-        if len(train_loader.dataset) == 0 or len(val_loader.dataset) == 0 or len(test_loader.dataset) == 0:
+        if (
+            len(train_loader.dataset) == 0
+            or len(val_loader.dataset) == 0
+            or len(test_loader.dataset) == 0
+        ):
             print(f"Split {split_idx} is empty. Skipping.")
             continue
 
@@ -995,7 +1086,13 @@ if __name__ == "__main__":
             model.train()
             train_loss = 0.0
 
-            for X_text_batch, X_num_batch, Y_batch, stock_batch, graph_seq_batch in train_loader:
+            for (
+                X_text_batch,
+                X_num_batch,
+                Y_batch,
+                stock_batch,
+                graph_seq_batch,
+            ) in train_loader:
                 X_text_batch = X_text_batch.to(device)
                 X_num_batch = X_num_batch.to(device)
                 Y_batch = Y_batch.to(device)
@@ -1018,7 +1115,13 @@ if __name__ == "__main__":
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
-                for X_text_val, X_num_val, Y_val, stock_val, graph_seq_val in val_loader:
+                for (
+                    X_text_val,
+                    X_num_val,
+                    Y_val,
+                    stock_val,
+                    graph_seq_val,
+                ) in val_loader:
                     X_text_val = X_text_val.to(device)
                     X_num_val = X_num_val.to(device)
                     Y_val = Y_val.to(device)
@@ -1035,7 +1138,9 @@ if __name__ == "__main__":
 
             avg_train_loss = train_loss / max(len(train_loader), 1)
             avg_val_loss = val_loss / max(len(val_loader), 1)
-            print(f"{experiment_name} | Split {split_idx} Epoch {epoch + 1} | Train={avg_train_loss:.6f} | Val={avg_val_loss:.6f}")
+            print(
+                f"{experiment_name} | Split {split_idx} Epoch {epoch + 1} | Train={avg_train_loss:.6f} | Val={avg_val_loss:.6f}"
+            )
 
             if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
@@ -1052,7 +1157,13 @@ if __name__ == "__main__":
         test_loss = 0.0
         all_preds = []
         with torch.no_grad():
-            for X_text_test, X_num_test, Y_test, stock_test, graph_seq_test in test_loader:
+            for (
+                X_text_test,
+                X_num_test,
+                Y_test,
+                stock_test,
+                graph_seq_test,
+            ) in test_loader:
                 X_text_test = X_text_test.to(device)
                 X_num_test = X_num_test.to(device)
                 Y_test = Y_test.to(device)
@@ -1079,6 +1190,3 @@ if __name__ == "__main__":
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-
-
