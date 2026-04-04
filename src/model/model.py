@@ -50,7 +50,7 @@ NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
 # - False / False -> invalid
 USE_LSTM = True
 USE_MDGNN = True
-LLM_SENTIMENT_MODE = "mean"  # "mean", "median" or "mode". Use None to exclude column
+LLM_SENTIMENT_MODE = None  # "mean", "median" or "mode". Use None to exclude column
 
 GRAPH_SPLIT_BASE_PATH = "data/model/graphs"
 GRAPH_SPLIT_FILES = [
@@ -877,7 +877,7 @@ def build_loaders_for_split(
         DataLoader(test_dataset, batch_size=batch_size, shuffle=False),
     )
 
-
+# region Main
 # Main
 if __name__ == "__main__":
     # torch.autograd.set_detect_anomaly(True)  # for debug
@@ -1094,6 +1094,8 @@ if __name__ == "__main__":
             range(MAX_EPOCHS), desc=f"Split {split_idx} Epochs", unit="epoch"
         )
 
+        train_losses = []
+        val_losses = []
         for epoch in epoch_pbar:
             model.train()
             train_loss = 0.0
@@ -1177,6 +1179,9 @@ if __name__ == "__main__":
             avg_train_loss = train_loss / max(len(train_loader), 1)
             avg_val_loss = val_loss / max(len(val_loader), 1)
 
+            train_losses.append(avg_train_loss)
+            val_losses.append(avg_val_loss)
+
             epoch_pbar.set_postfix(
                 train=f"{avg_train_loss:.4f}", val=f"{avg_val_loss:.4f}"
             )
@@ -1191,9 +1196,17 @@ if __name__ == "__main__":
                     tqdm.write(f"Early stopping triggered at epoch {epoch+1}")
                     break
 
+        # STore train and val losses
+        loss_df = pd.DataFrame({
+            "epoch": range(len(train_losses)),
+            "train_loss": train_losses,
+            "val_loss": val_losses,
+        })
+
         model.load_state_dict(torch.load(save_path, map_location=device))
         model.eval()
 
+        # region Testing
         test_loss = 0.0
         all_preds = []
         all_targets = []
