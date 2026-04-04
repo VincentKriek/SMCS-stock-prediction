@@ -50,7 +50,7 @@ class LazyHeadlineVectorizer:
         if self.use_prev_emb_file:
             print("Loading pre-computed .parquet")
             self.lf = pl.scan_parquet(self.stored_parquet_path, n_rows=None) # use the given file (with embedded_headlines column), use all rows
-            print(self.lf.collect_schema())
+            print(f"Loaded lf schema: {self.lf.collect_schema()}")
             
             # Set the max allowed healdine length for lstm to the 95th percentile
             self.max_headline_len = int(
@@ -198,7 +198,8 @@ class LazyHeadlineVectorizer:
             print("Training Word2Vec model...")
             self.train_word2vec()
         else:
-            print("Loaded pre-computed tokenized headlines and Word2Vec")
+            print("Loaded pre-computed Word2Vec")
+            self.train_word2vec()
         print("Building vocabulary IDs...")
         self.build_vocab_id()
         print("Adding embedded column...")
