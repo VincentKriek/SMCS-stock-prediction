@@ -507,13 +507,12 @@ class NewsGraphDataset(Dataset):
         row = self.valid_rows[idx]
         stock_symbol = row.get("Stock_symbol")
 
-        # --- Process Text IDs ---
         raw_text_ids = row.get(self.embedding_col)
 
         if raw_text_ids is None:
             text_ids = [0] * self.max_headline_len
         else:
-            text_ids = raw_text_ids[: self.max_headline_len]
+            text_ids = list(raw_text_ids)[: self.max_headline_len]
             text_ids += [0] * (self.max_headline_len - len(text_ids))
 
         numeric_feats = [float(row.get(col, 0.0)) for col in self.feature_cols]
