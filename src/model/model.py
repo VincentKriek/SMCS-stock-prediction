@@ -49,7 +49,7 @@ NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
 # - True / True   -> LSTM + MDGNN
 # - False / False -> invalid
 USE_LSTM = True
-USE_MDGNN = True
+USE_MDGNN = False
 LLM_SENTIMENT_MODE = None  # "mean", "median" or "mode". Use None to exclude column
 
 GRAPH_SPLIT_BASE_PATH = "data/model/graphs"
@@ -599,6 +599,10 @@ class LSTMOnlyModel(nn.Module):
         )
 
     def forward(self, text_ids, numeric_feats, stock_ids, graph_seq=None):
+        print(text_ids)
+        print(numeric_feats)
+        print(stock_ids)
+        sys.exit(1)
         text_repr = self.lstm_encoder(text_ids, stock_ids)
         parts = [text_repr]
         num_repr = self.numeric_proj(numeric_feats, text_ids.size(0), text_ids.device)
@@ -607,6 +611,21 @@ class LSTMOnlyModel(nn.Module):
         fused = torch.cat(parts, dim=1)
         return self.head(fused).squeeze(-1)
 
+class SimpleNN(nn.Module):
+    def __init__(self, num_numeric_features, num_stocks, emb_dim=8, hidden_dim=64):
+        super().__init__()
+        
+        self.stock_emb = nn.Embedding(num_stocks, emb_dim)
+        self.net = nn.Sequential(
+            nn.Linear(num_numeric_features + emb_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+
+    def forward(self, text_ids=None, numeric_feats=None, stock_ids=None, graph_seq=None):
+        stock_vec = self.stock_emb(stock_ids)
+        x = torch.cat([numeric_feats, stock_vec], dim=1)
+        return self.net(x).squeeze(-1)
 
 class MDGNNOnlyModel(nn.Module):
     def __init__(
@@ -717,6 +736,12 @@ def build_model(
         )
 
     if use_lstm and not use_mdgnn:
+        return SimpleNN(
+            num_numeric_features=len(NUMERIC_FEATURES),
+            num_stocks=len(stock2id),
+            emb_dim=64,
+            hidden_dim=64
+        )
         return LSTMOnlyModel(
             lstm_encoder=lstm_encoder,
             num_numeric_features=num_numeric_features,

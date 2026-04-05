@@ -16,7 +16,7 @@ def get_experiment_name(use_lstm: bool, use_mdgnn: bool, llm_mode: str) -> str:
         return f"mdgnn_only_llm_{llm_mode}"
     raise ValueError("USE_LSTM and USE_MDGNN cannot both be False.")
 
-experiment_name = get_experiment_name(use_lstm=True, use_mdgnn=True, llm_mode=None)
+experiment_name = get_experiment_name(use_lstm=True, use_mdgnn=False, llm_mode=None)
 num_splits = 1
 
 output_dir = Path("data/model/output")
