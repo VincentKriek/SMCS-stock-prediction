@@ -9,6 +9,11 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import r2_score, mean_squared_error
 
 # Configuration
 NEWS_N_ROWS = None
@@ -18,7 +23,7 @@ ROLLING_END_DATE = "2023-12-31"
 TRAIN_MONTHS = 6
 VAL_MONTHS = 1
 TEST_MONTHS = 5
-MAX_SPLITS = None
+MAX_SPLITS = 1
 
 BATCH_SIZE = 64
 HIDDEN_DIM = 128
@@ -33,8 +38,10 @@ PARQUET_PATH = "prepared_data_2018-01-01_2023-12-31.parquet"
 OUTPUT_DIR = Path("output")
 
 BASE_NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
-LLM_SENTIMENT_MODE = "mean"  # "mean", "median", "mode", or None
+LLM_SENTIMENT_MODE = None  # "mean", "median", "mode", or None
 BASELINE_MODELS = ["linear_regression", "mlp"]
+
+output_dir = Path("data/model/output")
 
 
 # Data utilities
@@ -282,7 +289,7 @@ def train_one_model(model_name, split_idx, train_loader, val_loader, test_loader
     print(f"{model_name} | Split {split_idx} | Test={test_loss:.6f}")
     return model, test_loss, preds_all, targets_all
 
-
+# region Main
 # Main
 def main():
     print("Running baseline models: linear regression + MLP")
@@ -294,12 +301,6 @@ def main():
     schema_names = lf.collect_schema().names()
     feature_cols = [c for c in BASE_NUMERIC_FEATURES if c in schema_names]
 
-    if LLM_SENTIMENT_MODE == "mean" and "Sentiment_llm_mean_filled" in schema_names:
-        feature_cols.append("Sentiment_llm_mean_filled")
-    elif LLM_SENTIMENT_MODE == "median" and "Sentiment_llm_median_filled" in schema_names:
-        feature_cols.append("Sentiment_llm_median_filled")
-    elif LLM_SENTIMENT_MODE == "mode" and "Sentiment_llm_mode_filled" in schema_names:
-        feature_cols.append("Sentiment_llm_mode_filled")
 
     if len(feature_cols) == 0:
         raise ValueError("No usable numeric feature columns were found in the parquet file.")
@@ -355,11 +356,56 @@ def main():
             end_date=plan["test_end"],
         )
 
+
         if len(train_df) == 0 or len(val_df) == 0 or len(test_df) == 0:
             print(f"Split {split_idx} is empty. Skipping.")
             del train_df, val_df, test_df
             gc.collect()
             continue
+
+        print("===== Linear Regression =====")
+        
+        # Concat train and val, as LinRegr doesn't use validation
+        train_df = pd.concat([train_df, val_df], axis=0) # train = train + val
+
+        # One-hot enocde stock-symbol
+        preprocess = ColumnTransformer(
+            transformers=[
+                ("cat", OneHotEncoder(handle_unknown="ignore"), ["Stock_symbol"]) # use 0 for unseen stocks
+            ]
+        )
+
+        drop_cols = ["target_return", "Date"]
+        X_train, y_train = train_df.drop(columns=drop_cols), train_df["target_return"]
+        X_test, y_test = test_df.drop(columns=drop_cols), test_df["target_return"]
+
+        lin_regr_model = Pipeline([
+            ("preprocess", preprocess),
+            ("regressor", LinearRegression())
+        ])
+        lin_regr_model.fit(X_train, y_train)
+
+        preds = lin_regr_model.predict(X_test)
+
+        dates = test_df["Date"]
+        stocks = test_df["Stock_symbol"]
+        results_df = pd.DataFrame({
+            "Date": dates,
+            "Stock_symbol": stocks,
+            "target_return": y_test,
+            "prediction": preds
+        })
+
+        csv_path = output_dir / f"preds_linregr_split_{split_idx}.csv"
+        results_df.to_csv(csv_path, index=False)
+        print(f"Predictions saved to: {csv_path}")
+
+        mse = mean_squared_error(y_true=y_test, y_pred=preds)
+        r2  = r2_score(y_true=y_test, y_pred=preds)
+
+        print("MSE: ", mse)
+        print("R²:  ", r2)
+        return
 
         scaler = StandardScalerTorch()
         scaler.fit(train_df, feature_cols)
