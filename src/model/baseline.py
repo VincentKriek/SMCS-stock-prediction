@@ -55,8 +55,21 @@ def add_next_day_return_target(lf: pl.LazyFrame) -> pl.LazyFrame:
                 / pl.col("close")
             ).alias(TARGET_COL)
         )
-        .filter(pl.col(TARGET_COL).is_not_null() & pl.col(TARGET_COL).is_finite())
+        .filter(
+            pl.col(TARGET_COL).is_not_null() & 
+            pl.col(TARGET_COL).is_finite() & 
+            (pl.col(TARGET_COL).abs() <= 0.5)  # Filter outliers > 50% daily move
+        )
     )
+
+
+def scale_features_per_stock(lf: pl.LazyFrame, features: list[str]) -> pl.LazyFrame:
+    """Z-score features relative to each stock's own mean/std."""
+    return lf.with_columns([
+        ((pl.col(f) - pl.col(f).mean().over("Stock_symbol")) / 
+         (pl.col(f).std().over("Stock_symbol") + 1e-8)).alias(f)
+        for f in features
+    ])
 
 
 class TabularStockDataset(Dataset):
@@ -305,6 +318,10 @@ def main():
 
     if len(feature_cols) == 0:
         raise ValueError("No usable numeric feature columns were found in the parquet file.")
+
+    # APPLY PER-STOCK SCALING (CRITICAL)
+    print(f"Applying per-stock scaling to: {feature_cols}")
+    lf = scale_features_per_stock(lf, feature_cols)
 
     print(f"Using features: {feature_cols}")
 
