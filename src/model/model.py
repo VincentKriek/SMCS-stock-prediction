@@ -770,9 +770,20 @@ def add_next_day_return_target(lf: pl.LazyFrame) -> pl.LazyFrame:
         ).alias("target_return")
     )
     lf = lf.filter(
-        pl.col("target_return").is_not_null() & pl.col("target_return").is_finite()
+        pl.col("target_return").is_not_null() & 
+        pl.col("target_return").is_finite() & 
+        (pl.col("target_return").abs() <= 0.5)  # Filter outliers > 50% daily move
     )
     return lf
+
+
+def scale_features_per_stock(lf: pl.LazyFrame, features: list[str]) -> pl.LazyFrame:
+    """Z-score features relative to each stock's own mean/std."""
+    return lf.with_columns([
+        ((pl.col(f) - pl.col(f).mean().over("Stock_symbol")) / 
+         (pl.col(f).std().over("Stock_symbol") + 1e-8)).alias(f)
+        for f in features
+    ])
 
 
 def make_halfyear_rolling_splits(
@@ -802,9 +813,13 @@ def make_halfyear_rolling_splits(
             (pl.col("Date") >= pl.lit(start_dt)) & (pl.col("Date") <= pl.lit(end_dt))
         )
         .sort("Date")
-        .collect(engine="streaming")
-        .to_pandas()
     )
+
+    # Apply per-stock scaling to numeric features
+    print(f"Applying per-stock scaling to: {numeric_features}")
+    df = scale_features_per_stock(df, numeric_features)
+
+    df = df.collect(engine="streaming").to_pandas()
 
     if len(df) == 0:
         return []
