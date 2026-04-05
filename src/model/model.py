@@ -10,6 +10,7 @@ from typing import Optional  # noqa: E402
 
 import polars as pl  # noqa: E402
 import pandas as pd  # noqa: E402
+import numpy as np  # noqa: E402
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
 from torch.utils.data import DataLoader, Dataset  # noqa: E402
@@ -49,7 +50,7 @@ NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
 # - True / True   -> LSTM + MDGNN
 # - False / False -> invalid
 USE_LSTM = True
-USE_MDGNN = False
+USE_MDGNN = True
 LLM_SENTIMENT_MODE = None  # "mean", "median" or "mode". Use None to exclude column
 
 GRAPH_SPLIT_BASE_PATH = "data/model/graphs"
@@ -269,6 +270,99 @@ def _map_graph_id_to_stock_symbol(graph_id, graph_cusip=None) -> str:
 GRAPH_ID_TO_SYMBOL = load_cusip_symbol_mapping(CUSIP_MAPPING_FILE)
 
 
+def signed_log1p_tensor(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+    if x is None:
+        return None
+    return torch.sign(x) * torch.log1p(torch.abs(x))
+
+
+def prepare_graph_feature_tensor(value, device: torch.device) -> Optional[torch.Tensor]:
+    tensor = _to_tensor(value, dtype=torch.float32)
+    if tensor is None:
+        return None
+    tensor = signed_log1p_tensor(tensor)
+    tensor = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+    return tensor.to(device)
+
+
+def is_log_feature_name(name: str) -> bool:
+    name = str(name).lower()
+    keywords = [
+        'volume', 'value', 'shares', 'aum', 'holder', 'holders', 'position', 'count'
+    ]
+    return any(k in name for k in keywords)
+
+
+def compute_numeric_stats(rows, feature_cols: list[str]):
+    stats = {}
+    if len(rows) == 0:
+        for col in feature_cols:
+            stats[col] = {'mean': 0.0, 'std': 1.0, 'use_log': is_log_feature_name(col)}
+        return stats
+
+    df = pd.DataFrame(rows)
+    for col in feature_cols:
+        use_log = is_log_feature_name(col)
+        series = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype(float) if col in df.columns else pd.Series([0.0] * len(df), dtype=float)
+        if use_log:
+            series = np.sign(series) * np.log1p(np.abs(series))
+        mean = float(series.mean()) if len(series) > 0 else 0.0
+        std = float(series.std(ddof=0)) if len(series) > 0 else 1.0
+        if not np.isfinite(std) or std < 1e-6:
+            std = 1.0
+        if not np.isfinite(mean):
+            mean = 0.0
+        stats[col] = {'mean': mean, 'std': std, 'use_log': use_log}
+    return stats
+
+
+def apply_numeric_transform_to_rows(rows, feature_cols: list[str], stats: dict):
+    transformed = []
+    for row in rows:
+        new_row = dict(row)
+        for col in feature_cols:
+            value = row.get(col, 0.0)
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                value = 0.0
+            if not np.isfinite(value):
+                value = 0.0
+            cfg = stats[col]
+            if cfg['use_log']:
+                value = float(np.sign(value) * np.log1p(abs(value)))
+            value = (value - cfg['mean']) / cfg['std']
+            if not np.isfinite(value):
+                value = 0.0
+            new_row[col] = float(value)
+        transformed.append(new_row)
+    return transformed
+
+
+def standardize_split_numeric_features(split_dict, feature_cols: list[str]):
+    stats = compute_numeric_stats(split_dict['train_rows'], feature_cols)
+    out = {
+        'train_rows': apply_numeric_transform_to_rows(split_dict['train_rows'], feature_cols, stats),
+        'val_rows': apply_numeric_transform_to_rows(split_dict['val_rows'], feature_cols, stats),
+        'test_rows': apply_numeric_transform_to_rows(split_dict['test_rows'], feature_cols, stats),
+    }
+    return out, stats
+
+
+def build_fresh_mdgnn(stock_in_dim, bank_in_dim, industry_in_dim, edge_dims, device):
+    return MDGNN(
+        stock_in_dim=stock_in_dim,
+        bank_in_dim=bank_in_dim,
+        industry_in_dim=industry_in_dim,
+        edge_dims=edge_dims,
+        hidden_dim=HIDDEN_DIM,
+        gnn_layers=GNN_LAYERS,
+        num_heads=4,
+        ff_dim=256,
+        dropout=DROPOUT,
+    ).to(device)
+
+
 # Graph snapshot loading
 def load_single_snapshot_file(snapshot_file: str):
     path = Path(GRAPH_SPLIT_BASE_PATH).joinpath(snapshot_file)
@@ -347,24 +441,15 @@ class SnapshotGraphFeatureCache:
 
         with torch.no_grad():
             for quarter_id, snap in raw_quarters.items():
-                stock_feat = _to_tensor(snap.get("stock_feat"), dtype=torch.float32)
+                stock_feat = prepare_graph_feature_tensor(snap.get("stock_feat"), device)
                 if stock_feat is None:
                     continue
-                stock_feat = stock_feat.to(device)
 
                 bank_feat_raw = snap.get("bank_feat")
-                bank_feat = (
-                    None
-                    if bank_feat_raw is None
-                    else _to_tensor(bank_feat_raw, dtype=torch.float32).to(device)
-                )
+                bank_feat = prepare_graph_feature_tensor(bank_feat_raw, device)
 
                 industry_feat_raw = snap.get("industry_feat")
-                industry_feat = (
-                    None
-                    if industry_feat_raw is None
-                    else _to_tensor(industry_feat_raw, dtype=torch.float32).to(device)
-                )
+                industry_feat = prepare_graph_feature_tensor(industry_feat_raw, device)
 
                 raw_edges = snap.get("edges", {})
                 edges = {}
@@ -376,7 +461,7 @@ class SnapshotGraphFeatureCache:
                         edge_index, edge_attr = normalized_edge
                         edges[rel] = (
                             edge_index.to(device),
-                            None if edge_attr is None else edge_attr.to(device),
+                            None if edge_attr is None else signed_log1p_tensor(edge_attr).to(device),
                         )
 
                 stock_emb = (
@@ -599,10 +684,6 @@ class LSTMOnlyModel(nn.Module):
         )
 
     def forward(self, text_ids, numeric_feats, stock_ids, graph_seq=None):
-        print(text_ids)
-        print(numeric_feats)
-        print(stock_ids)
-        sys.exit(1)
         text_repr = self.lstm_encoder(text_ids, stock_ids)
         parts = [text_repr]
         num_repr = self.numeric_proj(numeric_feats, text_ids.size(0), text_ids.device)
@@ -611,21 +692,6 @@ class LSTMOnlyModel(nn.Module):
         fused = torch.cat(parts, dim=1)
         return self.head(fused).squeeze(-1)
 
-class SimpleNN(nn.Module):
-    def __init__(self, num_numeric_features, num_stocks, emb_dim=8, hidden_dim=64):
-        super().__init__()
-        
-        self.stock_emb = nn.Embedding(num_stocks, emb_dim)
-        self.net = nn.Sequential(
-            nn.Linear(num_numeric_features + emb_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-
-    def forward(self, text_ids=None, numeric_feats=None, stock_ids=None, graph_seq=None):
-        stock_vec = self.stock_emb(stock_ids)
-        x = torch.cat([numeric_feats, stock_vec], dim=1)
-        return self.net(x).squeeze(-1)
 
 class MDGNNOnlyModel(nn.Module):
     def __init__(
@@ -736,12 +802,6 @@ def build_model(
         )
 
     if use_lstm and not use_mdgnn:
-        return SimpleNN(
-            num_numeric_features=len(NUMERIC_FEATURES),
-            num_stocks=len(stock2id),
-            emb_dim=64,
-            hidden_dim=64
-        )
         return LSTMOnlyModel(
             lstm_encoder=lstm_encoder,
             num_numeric_features=num_numeric_features,
@@ -770,20 +830,9 @@ def add_next_day_return_target(lf: pl.LazyFrame) -> pl.LazyFrame:
         ).alias("target_return")
     )
     lf = lf.filter(
-        pl.col("target_return").is_not_null() & 
-        pl.col("target_return").is_finite() & 
-        (pl.col("target_return").abs() <= 0.5)  # Filter outliers > 50% daily move
+        pl.col("target_return").is_not_null() & pl.col("target_return").is_finite()
     )
     return lf
-
-
-def scale_features_per_stock(lf: pl.LazyFrame, features: list[str]) -> pl.LazyFrame:
-    """Z-score features relative to each stock's own mean/std."""
-    return lf.with_columns([
-        ((pl.col(f) - pl.col(f).mean().over("Stock_symbol")) / 
-         (pl.col(f).std().over("Stock_symbol") + 1e-8)).alias(f)
-        for f in features
-    ])
 
 
 def make_halfyear_rolling_splits(
@@ -813,13 +862,9 @@ def make_halfyear_rolling_splits(
             (pl.col("Date") >= pl.lit(start_dt)) & (pl.col("Date") <= pl.lit(end_dt))
         )
         .sort("Date")
+        .collect(engine="streaming")
+        .to_pandas()
     )
-
-    # Apply per-stock scaling to numeric features
-    print(f"Applying per-stock scaling to: {numeric_features}")
-    df = scale_features_per_stock(df, numeric_features)
-
-    df = df.collect(engine="streaming").to_pandas()
 
     if len(df) == 0:
         return []
@@ -970,7 +1015,7 @@ if __name__ == "__main__":
     stock2id = {symbol: idx for idx, symbol in enumerate(stocks)}
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    mdgnn = None
+    graph_dims = None
 
     if USE_MDGNN:
         ordered_graph_files = normalize_snapshot_file_list(GRAPH_SPLIT_FILES)
@@ -979,21 +1024,7 @@ if __name__ == "__main__":
                 "At least two graph split files are required when USE_MDGNN=True."
             )
 
-        stock_in_dim, bank_in_dim, industry_in_dim, edge_dims = (
-            infer_graph_dims_from_snapshot_files(ordered_graph_files[0])
-        )
-
-        mdgnn = MDGNN(
-            stock_in_dim=stock_in_dim,
-            bank_in_dim=bank_in_dim,
-            industry_in_dim=industry_in_dim,
-            edge_dims=edge_dims,
-            hidden_dim=HIDDEN_DIM,
-            gnn_layers=GNN_LAYERS,
-            num_heads=4,
-            ff_dim=256,
-            dropout=DROPOUT,
-        ).to(device)
+        graph_dims = infer_graph_dims_from_snapshot_files(ordered_graph_files[0])
 
     rolling_splits = make_halfyear_rolling_splits(
         data=lhv.lf,
@@ -1026,15 +1057,19 @@ if __name__ == "__main__":
                 f"iterations are supported by the provided graph files. Extra data splits will be skipped."
             )
 
-    loaded_graph_caches = {}
     output_dir = Path("data/model/output")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for split_idx, split_info in enumerate(rolling_splits, start=1):
         print(f"Starting split {split_idx}...")
 
+        split_info_std, numeric_stats = standardize_split_numeric_features(
+            split_info, available_numeric_features
+        )
+
         train_graph_cache = EmptyGraphFeatureCache(hidden_dim=HIDDEN_DIM)
         eval_graph_cache = EmptyGraphFeatureCache(hidden_dim=HIDDEN_DIM)
+        current_mdgnn = None
 
         if USE_MDGNN:
             try:
@@ -1047,47 +1082,47 @@ if __name__ == "__main__":
                 )
                 continue
 
-            required_files = {train_graph_file, eval_graph_file}
+            stock_in_dim, bank_in_dim, industry_in_dim, edge_dims = graph_dims
+            current_mdgnn = build_fresh_mdgnn(
+                stock_in_dim, bank_in_dim, industry_in_dim, edge_dims, device
+            )
 
-            stale_files = [f for f in loaded_graph_caches if f not in required_files]
-            for stale_file in stale_files:
-                del loaded_graph_caches[stale_file]
-            if len(stale_files) > 0:
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
-            if train_graph_file not in loaded_graph_caches:
-                loaded_graph_caches[train_graph_file] = SnapshotGraphFeatureCache(
-                    snapshot_files=train_graph_file,
-                    mdgnn_model=mdgnn,
-                    device=device,
-                    hidden_dim=HIDDEN_DIM,
-                )
-
-            if eval_graph_file not in loaded_graph_caches:
-                loaded_graph_caches[eval_graph_file] = SnapshotGraphFeatureCache(
-                    snapshot_files=eval_graph_file,
-                    mdgnn_model=mdgnn,
-                    device=device,
-                    hidden_dim=HIDDEN_DIM,
-                )
-
-            train_graph_cache = loaded_graph_caches[train_graph_file]
-            eval_graph_cache = loaded_graph_caches[eval_graph_file]
+            train_graph_cache = SnapshotGraphFeatureCache(
+                snapshot_files=train_graph_file,
+                mdgnn_model=current_mdgnn,
+                device=device,
+                hidden_dim=HIDDEN_DIM,
+            )
+            eval_graph_cache = SnapshotGraphFeatureCache(
+                snapshot_files=eval_graph_file,
+                mdgnn_model=current_mdgnn,
+                device=device,
+                hidden_dim=HIDDEN_DIM,
+            )
 
             print(
                 f"Split {split_idx} graph files | "
                 f"train={train_graph_file} | val/test={eval_graph_file} | "
-                f"loaded_now={list(loaded_graph_caches.keys())} | "
                 f"train_quarters={len(train_graph_cache.available_quarters)} | "
                 f"train_nonempty={train_graph_cache.num_nonempty_quarters} | "
                 f"eval_quarters={len(eval_graph_cache.available_quarters)} | "
                 f"eval_nonempty={eval_graph_cache.num_nonempty_quarters}"
             )
 
+        if available_numeric_features:
+            preview_cols = available_numeric_features[: min(3, len(available_numeric_features))]
+            preview = {
+                col: {
+                    'mean': round(numeric_stats[col]['mean'], 4),
+                    'std': round(numeric_stats[col]['std'], 4),
+                    'log': numeric_stats[col]['use_log'],
+                }
+                for col in preview_cols
+            }
+            print(f"Split {split_idx} numeric normalization preview: {preview}")
+
         train_loader, val_loader, test_loader = build_loaders_for_split(
-            split_dict=split_info,
+            split_dict=split_info_std,
             stock2id=stock2id,
             train_graph_cache=train_graph_cache,
             eval_graph_cache=eval_graph_cache,
@@ -1120,8 +1155,6 @@ if __name__ == "__main__":
                 device=device,
             ).to(device)
 
-        current_mdgnn = mdgnn if USE_MDGNN else None
-
         model = build_model(
             use_lstm=USE_LSTM,
             use_mdgnn=USE_MDGNN,
@@ -1133,7 +1166,7 @@ if __name__ == "__main__":
         ).to(device)
 
         criterion = nn.MSELoss()
-        optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
+        optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-5)
 
         best_val_loss = float("inf")
         counter = 0
@@ -1195,10 +1228,20 @@ if __name__ == "__main__":
 
                 loss = criterion(preds, Y_batch)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
 
                 current_loss = loss.item()
                 train_loss += current_loss
+                if epoch == 0 and train_loss == current_loss:
+                    pred_min = float(preds.detach().min().cpu())
+                    pred_max = float(preds.detach().max().cpu())
+                    target_min = float(Y_batch.detach().min().cpu())
+                    target_max = float(Y_batch.detach().max().cpu())
+                    print(
+                        f"Split {split_idx} first-batch ranges | preds=[{pred_min:.6f}, {pred_max:.6f}] | "
+                        f"targets=[{target_min:.6f}, {target_max:.6f}]"
+                    )
                 train_pbar.set_postfix(loss=f"{current_loss:.4f}")
 
             model.eval()
@@ -1308,10 +1351,12 @@ if __name__ == "__main__":
         print(f"Predictions saved to: {csv_path}")
 
         del train_loader, val_loader, test_loader, model
+        if current_mdgnn is not None:
+            del current_mdgnn
         if USE_LSTM and lstm_encoder is not None:
             del lstm_encoder
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-            
+
