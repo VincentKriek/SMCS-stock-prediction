@@ -14,6 +14,7 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.neural_network import MLPRegressor
 
 # Configuration
 NEWS_N_ROWS = None
@@ -363,27 +364,33 @@ def main():
             gc.collect()
             continue
 
-        print("===== Linear Regression =====")
-        
-        # Concat train and val, as LinRegr doesn't use validation
-        train_df = pd.concat([train_df, val_df], axis=0) # train = train + val
-
         # One-hot enocde stock-symbol
         preprocess = ColumnTransformer(
             transformers=[
                 ("cat", OneHotEncoder(handle_unknown="ignore"), ["Stock_symbol"]) # use 0 for unseen stocks
-            ]
+            ],
+            remainder="passthrough"
         )
+        # Concat train and val (sklearn handles internally with MLP)
+        train_df = pd.concat([train_df, val_df], axis=0) # train = train + val
 
         drop_cols = ["target_return", "Date"]
         X_train, y_train = train_df.drop(columns=drop_cols), train_df["target_return"]
         X_test, y_test = test_df.drop(columns=drop_cols), test_df["target_return"]
 
+        # region Linear Regresson
+        print("===== Linear Regression =====")
+        
         lin_regr_model = Pipeline([
             ("preprocess", preprocess),
             ("regressor", LinearRegression())
         ])
         lin_regr_model.fit(X_train, y_train)
+
+        coeff = lin_regr_model["regressor"].coef_
+        print(f"No. of coeffs: {len(coeff)}")
+        # print(coeff) # len = #no. unique stocks + #features
+        # print(lin_regr_model["regressor"].intercept_)
 
         preds = lin_regr_model.predict(X_test)
 
@@ -395,86 +402,48 @@ def main():
             "target_return": y_test,
             "prediction": preds
         })
+        results_df = results_df.sort_values(by=["Stock_symbol", "Date"]).reset_index(drop=True)
 
-        csv_path = output_dir / f"preds_linregr_split_{split_idx}.csv"
+        csv_path = output_dir / f"BASE_preds_linregr_split_{split_idx}.csv"
         results_df.to_csv(csv_path, index=False)
         print(f"Predictions saved to: {csv_path}")
 
         mse = mean_squared_error(y_true=y_test, y_pred=preds)
         r2  = r2_score(y_true=y_test, y_pred=preds)
-
         print("MSE: ", mse)
         print("R²:  ", r2)
-        return
+        # endregion
 
-        scaler = StandardScalerTorch()
-        scaler.fit(train_df, feature_cols)
-        train_df = scaler.transform(train_df, feature_cols)
-        val_df = scaler.transform(val_df, feature_cols)
-        test_df = scaler.transform(test_df, feature_cols)
+        # region MLP
+        print("===== MLP =====")
+        val_fraction = VAL_MONTHS / (TRAIN_MONTHS + VAL_MONTHS)
+        mlp_model = Pipeline([
+            ("preprocess", preprocess),
+            ("mlp", MLPRegressor(validation_fraction=val_fraction))
+        ])
 
-        train_loader, val_loader, test_loader = build_loaders(
-            train_df=train_df,
-            val_df=val_df,
-            test_df=test_df,
-            feature_cols=feature_cols,
-            batch_size=BATCH_SIZE,
-        )
+        mlp_model.fit(X_train, y_train)
 
-        if len(train_loader.dataset) == 0 or len(val_loader.dataset) == 0 or len(test_loader.dataset) == 0:
-            print(f"Split {split_idx} dataset is empty after loading. Skipping.")
-            del train_df, val_df, test_df, train_loader, val_loader, test_loader
-            gc.collect()
-            continue
+        preds = mlp_model.predict(X_test)
 
-        test_rows = test_loader.dataset.rows
+        dates = test_df["Date"]
+        stocks = test_df["Stock_symbol"]
+        results_df = pd.DataFrame({
+            "Date": dates,
+            "Stock_symbol": stocks,
+            "target_return": y_test,
+            "prediction": preds
+        })
+        results_df = results_df.sort_values(by=["Stock_symbol", "Date"]).reset_index(drop=True)
 
-        for model_name in BASELINE_MODELS:
-            model, test_loss, preds_all, targets_all = train_one_model(
-                model_name=model_name,
-                split_idx=split_idx,
-                train_loader=train_loader,
-                val_loader=val_loader,
-                test_loader=test_loader,
-                device=device,
-            )
+        csv_path = output_dir / f"BASE_preds_mlp_split_{split_idx}.csv"
+        results_df.to_csv(csv_path, index=False)
+        print(f"Predictions saved to: {csv_path}")
 
-            summary_rows.append(
-                {
-                    "model": model_name,
-                    "split": split_idx,
-                    "test_loss": test_loss,
-                }
-            )
-
-            results_df = pd.DataFrame(
-                {
-                    "Date": [row.get("Date") for row in test_rows],
-                    "Stock_symbol": [row.get("Stock_symbol") for row in test_rows],
-                    "target_return": targets_all,
-                    "prediction": preds_all,
-                }
-            )
-            csv_path = OUTPUT_DIR / f"preds_{model_name}_split_{split_idx}.csv"
-            results_df.to_csv(csv_path, index=False)
-            print(f"Predictions saved to: {csv_path}")
-
-            del model, results_df
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-        del train_df, val_df, test_df, train_loader, val_loader, test_loader
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    if summary_rows:
-        summary_df = pd.DataFrame(summary_rows)
-        summary_path = OUTPUT_DIR / "baseline_summary.csv"
-        summary_df.to_csv(summary_path, index=False)
-        print(f"Summary saved to: {summary_path}")
-
+        mse = mean_squared_error(y_true=y_test, y_pred=preds)
+        r2  = r2_score(y_true=y_test, y_pred=preds)
+        print("MSE: ", mse)
+        print("R²:  ", r2)
 
 if __name__ == "__main__":
     main()
