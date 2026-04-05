@@ -15,6 +15,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.neural_network import MLPRegressor
+from sklearn.preprocessing import StandardScaler
 
 # Configuration
 NEWS_N_ROWS = None
@@ -328,8 +329,6 @@ def main():
     print(f"Total splits to run: {len(split_plans)}")
     print(f"Output folder: {OUTPUT_DIR.resolve()}")
 
-    summary_rows = []
-
     for split_idx, plan in enumerate(split_plans, start=1):
         print(f"\nStarting split {split_idx}...")
         print(
@@ -367,10 +366,12 @@ def main():
         # One-hot enocde stock-symbol
         preprocess = ColumnTransformer(
             transformers=[
-                ("cat", OneHotEncoder(handle_unknown="ignore"), ["Stock_symbol"]) # use 0 for unseen stocks
+                ("cat", OneHotEncoder(handle_unknown="ignore"), ["Stock_symbol"]), # use 0 for unseen stocks
+                ("num", StandardScaler(), feature_cols)
             ],
             remainder="passthrough"
         )
+
         # Concat train and val (sklearn handles internally with MLP)
         train_df = pd.concat([train_df, val_df], axis=0) # train = train + val
 
@@ -380,17 +381,28 @@ def main():
 
         # region Linear Regresson
         print("===== Linear Regression =====")
-        
+
         lin_regr_model = Pipeline([
             ("preprocess", preprocess),
             ("regressor", LinearRegression())
         ])
+
         lin_regr_model.fit(X_train, y_train)
 
         coeff = lin_regr_model["regressor"].coef_
         print(f"No. of coeffs: {len(coeff)}")
-        # print(coeff) # len = #no. unique stocks + #features
-        # print(lin_regr_model["regressor"].intercept_)
+        feature_names = lin_regr_model.named_steps["preprocess"].get_feature_names_out()
+        coef_df = pd.DataFrame({
+            "feature": feature_names,
+            "coeff": coeff
+        })
+        coef_df = coef_df.sort_values(by="coeff", key=abs, ascending=False)
+        intercept_df = pd.DataFrame({
+            "feature": ["intercept"],
+            "coeff": [lin_regr_model.named_steps["regressor"].intercept_]
+        })
+        coef_df = pd.concat([intercept_df, coef_df])
+        print(coef_df)
 
         preds = lin_regr_model.predict(X_test)
 
@@ -419,7 +431,12 @@ def main():
         val_fraction = VAL_MONTHS / (TRAIN_MONTHS + VAL_MONTHS)
         mlp_model = Pipeline([
             ("preprocess", preprocess),
-            ("mlp", MLPRegressor(validation_fraction=val_fraction))
+            ("mlp", MLPRegressor(
+                hidden_layer_sizes=(32,),
+                max_iter=100,
+                validation_fraction=val_fraction,
+                early_stopping=True
+            ))
         ])
 
         mlp_model.fit(X_train, y_train)
@@ -444,6 +461,7 @@ def main():
         r2  = r2_score(y_true=y_test, y_pred=preds)
         print("MSE: ", mse)
         print("R²:  ", r2)
+        # endregion
 
 if __name__ == "__main__":
     main()
