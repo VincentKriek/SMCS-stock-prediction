@@ -36,8 +36,7 @@ LR = 1e-3
 WEIGHT_DECAY = 1e-5
 
 TARGET_COL = "target_return"
-PARQUET_PATH = "prepared_data_2018-01-01_2023-12-31.parquet"
-OUTPUT_DIR = Path("output")
+PARQUET_PATH = "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
 
 BASE_NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
 LLM_SENTIMENT_MODE = None  # "mean", "median", "mode", or None
@@ -253,7 +252,7 @@ def train_one_model(model_name, split_idx, train_loader, val_loader, test_loader
 
     best_val_loss = float("inf")
     patience_counter = 0
-    save_path = OUTPUT_DIR / f"best_{model_name}_split_{split_idx}.pt"
+    save_path = output_dir / f"best_{model_name}_split_{split_idx}.pt"
 
     epoch_bar = tqdm(range(MAX_EPOCHS), desc=f"{model_name} | Split {split_idx}", unit="epoch")
     for epoch in epoch_bar:
@@ -323,11 +322,11 @@ def main():
     if MAX_SPLITS is not None:
         split_plans = split_plans[:MAX_SPLITS]
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     print(f"Total splits to run: {len(split_plans)}")
-    print(f"Output folder: {OUTPUT_DIR.resolve()}")
+    print(f"Output folder: {output_dir.resolve()}")
 
     for split_idx, plan in enumerate(split_plans, start=1):
         print(f"\nStarting split {split_idx}...")
