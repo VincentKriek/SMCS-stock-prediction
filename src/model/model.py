@@ -51,7 +51,7 @@ NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
 # - False / False -> invalid
 USE_LSTM = True
 USE_MDGNN = True
-LLM_SENTIMENT_MODE = None  # "mean", "median" or "mode". Use None to exclude column
+LLM_SENTIMENT_MODE = "mean"  # "mean", "median" or "mode". Use None to exclude column
 
 GRAPH_SPLIT_BASE_PATH = "data/model/graphs"
 GRAPH_SPLIT_FILES = [
@@ -69,7 +69,7 @@ GRAPH_SPLIT_FILES = [
     "graphs_split_12.pt",
 ]
 
-CUSIP_MAPPING_FILE = "CUSIP.csv"
+CUSIP_MAPPING_FILE = "data/model/CUSIP.csv"
 
 
 # Helper functions
@@ -242,10 +242,18 @@ def load_cusip_symbol_mapping(mapping_file: str) -> dict[str, str]:
 
 
 def _map_graph_id_to_stock_symbol(graph_id, graph_cusip=None) -> str:
+    # 1. Try direct symbol match first (e.g. if graph_id is already the symbol)
+    for raw in [graph_id, graph_cusip]:
+        if raw is None:
+            continue
+        raw_key = str(raw).strip().upper()
+        if raw_key != "" and re.fullmatch(r"[A-Z.\-]+", raw_key):
+             return raw_key
+
+    # 2. Fallback to CUSIP mapping
     for raw in [graph_cusip, graph_id]:
         if raw is None:
             continue
-
         raw_key = str(raw).strip().upper()
         if raw_key == "":
             continue
@@ -257,6 +265,7 @@ def _map_graph_id_to_stock_symbol(graph_id, graph_cusip=None) -> str:
         if stripped in GRAPH_ID_TO_SYMBOL:
             return _normalize_stock_key(GRAPH_ID_TO_SYMBOL[stripped])
 
+        # 3. Last resort re-parsing
         if stripped != "" and re.fullmatch(r"[A-Z.\-]+", stripped):
             return stripped
 
@@ -698,12 +707,14 @@ class MDGNNOnlyModel(nn.Module):
         self,
         mdgnn_model: MDGNN,
         num_numeric_features: int,
+        num_stocks: int,
         graph_hidden_dim: int = 128,
         hidden_dim: int = 128,
         dropout: float = 0.1,
     ):
         super().__init__()
         self.mdgnn_model = mdgnn_model
+        self.stock_embedding = nn.Embedding(num_stocks, hidden_dim)
         self.numeric_proj = NumericFeatureProjector(
             num_numeric_features, hidden_dim, dropout
         )
@@ -712,7 +723,10 @@ class MDGNNOnlyModel(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
         )
-        fusion_input_dim = hidden_dim + (hidden_dim if num_numeric_features > 0 else 0)
+        # Fusion: Graph + Numeric + Stock ID
+        fusion_input_dim = (
+            hidden_dim + hidden_dim + (hidden_dim if num_numeric_features > 0 else 0)
+        )
 
         self.head = nn.Sequential(
             nn.Linear(fusion_input_dim, hidden_dim),
@@ -726,12 +740,16 @@ class MDGNNOnlyModel(nn.Module):
     ):
         _, graph_repr, _ = self.mdgnn_model.forward(graph_seq, return_attention=True)
         graph_repr = self.graph_proj(graph_repr)
-        parts = [graph_repr]
+        
+        stock_repr = self.stock_embedding(stock_ids)
+        
+        parts = [graph_repr, stock_repr]
         batch_size = graph_seq.size(0)
         device = graph_seq.device
         num_repr = self.numeric_proj(numeric_feats, batch_size, device)
         if num_repr.shape[1] > 0:
             parts.append(num_repr)
+        
         fused = torch.cat(parts, dim=1)
         return self.head(fused).squeeze(-1)
 
@@ -742,6 +760,7 @@ class LSTM_MDGNN_Fusion(nn.Module):
         lstm_encoder: LSTM_Encoder,
         mdgnn_model: MDGNN,
         num_numeric_features: int,
+        num_stocks: int,
         graph_hidden_dim: int = 128,
         hidden_dim: int = 128,
         dropout: float = 0.1,
@@ -749,6 +768,7 @@ class LSTM_MDGNN_Fusion(nn.Module):
         super().__init__()
         self.lstm_encoder = lstm_encoder
         self.mdgnn_model = mdgnn_model
+        self.stock_embedding = nn.Embedding(num_stocks, hidden_dim)
         self.numeric_proj = NumericFeatureProjector(
             num_numeric_features, hidden_dim, dropout
         )
@@ -757,8 +777,12 @@ class LSTM_MDGNN_Fusion(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
         )
+        # Fusion: LSTM Repr + Graph Repr + Stock ID + Numeric
         fusion_input_dim = (
-            hidden_dim + hidden_dim + (hidden_dim if num_numeric_features > 0 else 0)
+            hidden_dim
+            + hidden_dim
+            + hidden_dim
+            + (hidden_dim if num_numeric_features > 0 else 0)
         )
 
         self.fusion_head = nn.Sequential(
@@ -773,7 +797,9 @@ class LSTM_MDGNN_Fusion(nn.Module):
         _, graph_repr, _ = self.mdgnn_model.forward(graph_seq, return_attention=True)
         graph_repr = self.graph_proj(graph_repr)
 
-        parts = [text_repr, graph_repr]
+        stock_repr = self.stock_embedding(stock_ids)
+
+        parts = [text_repr, graph_repr, stock_repr]
         num_repr = self.numeric_proj(numeric_feats, text_ids.size(0), text_ids.device)
         if num_repr.shape[1] > 0:
             parts.append(num_repr)
@@ -788,6 +814,7 @@ def build_model(
     lstm_encoder: Optional[LSTM_Encoder],
     mdgnn_model: Optional[MDGNN],
     num_numeric_features: int,
+    num_stocks: int,
     hidden_dim: int,
     dropout: float = 0.1,
 ):
@@ -796,23 +823,23 @@ def build_model(
             lstm_encoder=lstm_encoder,
             mdgnn_model=mdgnn_model,
             num_numeric_features=num_numeric_features,
+            num_stocks=num_stocks,
             graph_hidden_dim=hidden_dim,
             hidden_dim=hidden_dim,
             dropout=dropout,
         )
-
-    if use_lstm and not use_mdgnn:
+    if use_lstm:
         return LSTMOnlyModel(
             lstm_encoder=lstm_encoder,
             num_numeric_features=num_numeric_features,
             hidden_dim=hidden_dim,
             dropout=dropout,
         )
-
-    if use_mdgnn and not use_lstm:
+    if use_mdgnn:
         return MDGNNOnlyModel(
             mdgnn_model=mdgnn_model,
             num_numeric_features=num_numeric_features,
+            num_stocks=num_stocks,
             graph_hidden_dim=hidden_dim,
             hidden_dim=hidden_dim,
             dropout=dropout,
@@ -1161,6 +1188,7 @@ if __name__ == "__main__":
             lstm_encoder=lstm_encoder,
             mdgnn_model=current_mdgnn,
             num_numeric_features=len(available_numeric_features),
+            num_stocks=len(stocks),
             hidden_dim=HIDDEN_DIM,
             dropout=DROPOUT,
         ).to(device)
