@@ -325,12 +325,12 @@ def main():
     print(f"Total splits to run: {len(split_plans)}")
     print(f"Output folder: {output_dir.resolve()}")
 
-    TRAIN_PER_STOCK = False
+    TRAIN_PER_STOCK = True
     USE_LIN_REGR = False
     if TRAIN_PER_STOCK:
         stocks = lf.select(STOCK_SYMBOL).unique().collect()[STOCK_SYMBOL].to_list()
         res = {s: ([], []) for s in stocks}
-        for s in stocks[:10]:
+        for s in stocks:
             s_mses, s_r2s = train_baseline(lf, split_plans, feature_cols,use_lin_regr=USE_LIN_REGR, stock_name=s)
             res[s] = (s_mses, s_r2s)
 
