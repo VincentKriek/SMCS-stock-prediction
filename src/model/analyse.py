@@ -1,7 +1,5 @@
-import matplotlib.pyplot as plt
 from pathlib import Path
 import pandas as pd
-import numpy as np
 from sklearn.metrics import mean_squared_error, r2_score, median_absolute_error
 
 # for reference, the code exports csv files with 4 columns: Date, Stock_symbol, target_return, prediction
@@ -19,7 +17,7 @@ def get_experiment_name(use_lstm: bool, use_mdgnn: bool, llm_mode: str) -> str:
 
 
 experiment_name = get_experiment_name(use_lstm=True, use_mdgnn=True, llm_mode="mean")
-num_splits = 1
+num_splits = None
 
 output_dir = Path("data/model/output")
 
