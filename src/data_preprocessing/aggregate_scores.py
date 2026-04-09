@@ -23,7 +23,6 @@ def aggregate_scores(news_lf, stock_lf, lambda_decay):
 def fill_news_gaps(lf, lambda_decay, sentiment_col):
     lf = lf.sort(["Stock_symbol", "Date"])
 
-    # add columns for propagation formula
     lf = lf.with_columns(
         pl.col(sentiment_col).forward_fill().over("Stock_symbol").alias("S0"),
         pl.when(pl.col(sentiment_col).is_not_null())
@@ -37,7 +36,6 @@ def fill_news_gaps(lf, lambda_decay, sentiment_col):
         (pl.col("Date") - pl.col("last_news_date")).dt.total_days().alias("t")
     )
 
-    # apply formula
     lf = lf.with_columns(
         (3 + (pl.col("S0") - 3) * (-lambda_decay * pl.col("t")).exp()).alias(
             f"{sentiment_col}_filled"

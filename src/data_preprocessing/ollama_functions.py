@@ -5,10 +5,6 @@ from langchain_ollama import ChatOllama
 CONTEXT_WINDOW = 4096
 MAX_RETRIES = 1
 
-# -----------------------------
-# LLM configuration
-# -----------------------------
-
 llm = ChatOllama(
     model="qwen2.5:7b-instruct",
     temperature=0,
@@ -62,14 +58,14 @@ def parse_scores(text):
 
 
 async def score_batch(rows):
-    conversation = build_conversation(rows)  # rows will always be [row]
+    conversation = build_conversation(rows)
 
     for attempt in range(MAX_RETRIES):
         try:
             response = await llm.ainvoke(conversation)
 
             score = parse_scores(response.content)
-            return [score]  # keep it as list to match the worker code
+            return [score]
 
         except Exception as e:
             print(f"Attempt {attempt+1} failed: {e}")
