@@ -13,7 +13,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import r2_score, mean_squared_error, median_absolute_error
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
@@ -147,7 +147,7 @@ def train_baseline(lf: pl.LazyFrame, split_plans, feature_cols, use_lin_regr, st
     if stock_name:
         lf = lf.filter(pl.col(STOCK_SYMBOL).eq(stock_name))
 
-    mse_per_split, r2_per_split = [], []
+    mse_per_split, r2_per_split, mae_per_split = [], [], []
     for split_idx, plan in enumerate(split_plans, start=1):
         # print(f"\nStarting split {split_idx}...")
         # print(
@@ -233,8 +233,10 @@ def train_baseline(lf: pl.LazyFrame, split_plans, feature_cols, use_lin_regr, st
 
             mse = mean_squared_error(y_true=y_test, y_pred=preds)
             r2  = r2_score(y_true=y_test, y_pred=preds)
+            mae = median_absolute_error(y_true=y_test, y_pred=preds)
             mse_per_split.append(mse)
             r2_per_split.append(r2)
+            mae_per_split.append(mae)
         else:
             # print("===== MLP =====")
             val_fraction = VAL_MONTHS / (TRAIN_MONTHS + VAL_MONTHS)
@@ -278,10 +280,12 @@ def train_baseline(lf: pl.LazyFrame, split_plans, feature_cols, use_lin_regr, st
 
             mse = mean_squared_error(y_true=y_test, y_pred=preds)
             r2  = r2_score(y_true=y_test, y_pred=preds)
+            mae = median_absolute_error(y_true=y_test, y_pred=preds)
             mse_per_split.append(mse)
             r2_per_split.append(r2)
+            mae_per_split.append(mae)
 
-    return mse_per_split, r2_per_split
+    return mse_per_split, r2_per_split, mae_per_split
 
 
 # region Main
@@ -325,7 +329,7 @@ def main():
     print(f"Total splits to run: {len(split_plans)}")
     print(f"Output folder: {output_dir.resolve()}")
 
-    TRAIN_PER_STOCK = True
+    TRAIN_PER_STOCK = False
     USE_LIN_REGR = False
     if TRAIN_PER_STOCK:
         stocks = lf.select(STOCK_SYMBOL).unique().collect()[STOCK_SYMBOL].to_list()
@@ -336,26 +340,28 @@ def main():
 
         # Write results
         rows = []
-        for s, (mses, r2s) in res.items():
-            for i, (mse, r2) in enumerate(zip(mses, r2s)):
+        for s, (mses, r2s, maes) in res.items():
+            for i, (mse, r2, mae) in enumerate(zip(mses, r2s, maes)):
                 rows.append({
                     "split_idx": i,
                     "mse": mse,
-                    "r2": r2
+                    "r2": r2,
+                    "mae": mae
                 })
         df = pd.DataFrame(rows)
         model_name = "LINREGR" if USE_LIN_REGR else "MLP"
         df.to_csv(output_dir / f"BASE_per_stock_{model_name}_metrics.csv", index=False)
     else:
-        mses, r2s = train_baseline(lf, split_plans, feature_cols, use_lin_regr=USE_LIN_REGR, stock_name=None)
+        mses, r2s, maes = train_baseline(lf, split_plans, feature_cols, use_lin_regr=USE_LIN_REGR, stock_name=None)
 
         # Write results
         rows = []
-        for i, (mse, r2) in enumerate(zip(mses, r2s)):
+        for i, (mse, r2, mae) in enumerate(zip(mses, r2s, maes)):
             rows.append({
                 "split_idx": i,
                 "mse": mse,
-                "r2": r2
+                "r2": r2,
+                "mae": mae
             })
         df = pd.DataFrame(rows)
         model_name = "LINREGR" if USE_LIN_REGR else "MLP"

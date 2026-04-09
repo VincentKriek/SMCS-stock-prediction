@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, r2_score, median_absolute_error
 
 # for reference, the code exports csv files with 4 columns: Date, Stock_symbol, target_return, prediction
 
@@ -31,10 +31,13 @@ for s in range(1, num_splits + 1):
         y_true=res_df["target_return"], y_pred=res_df["prediction"]
     )
     r2 = r2_score(y_true=res_df["target_return"], y_pred=res_df["prediction"])
+    mae = median_absolute_error(y_true=res_df["target_return"], y_pred=res_df["prediction"])
+
 
     print(f"Overall scores (Split {s})")
     print(f"- MSE: {mse:.6f}")
-    print(f"- R² : {r2:.6f}\n")
+    print(f"- R² : {r2:.6f}")
+    print(f"- MAE: {mae:.6f}")
 
     # Print results per stock
     results = []
@@ -62,7 +65,7 @@ for s in range(1, num_splits + 1):
         )  # note that r2 needs >= 2 values to not be NaN
 
         results.append({"Date": date, "MSE": group_mse, "R2": group_r2})
-    results = pd.DataFrame(results)
+    results = pd.DataFrame(results).sort_values(by="MSE", ascending=False)
     print("Metrics per Date:")
     print(results)
 
