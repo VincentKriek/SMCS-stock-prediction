@@ -995,7 +995,6 @@ def build_loaders_for_split(
 # region Main
 # Main
 if __name__ == "__main__":
-    # torch.autograd.set_detect_anomaly(True)  # for debug
 
     experiment_name = get_experiment_name(USE_LSTM, USE_MDGNN, LLM_SENTIMENT_MODE)
     print(f"Running experiment mode: {experiment_name}")
@@ -1004,7 +1003,6 @@ if __name__ == "__main__":
     print(f"Using ordered graph split files: {GRAPH_SPLIT_FILES}")
     print(f"Loaded CUSIP-symbol mappings: {len(GRAPH_ID_TO_SYMBOL)}")
 
-    # path = "../../data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
     path = "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
     prev_emb_file = Path(f"data/pre-processor/lf_tokenized_{NEWS_N_ROWS}_rows.parquet")
     print(f"Tokenized lf path exists?: {prev_emb_file.exists()}")
@@ -1016,7 +1014,6 @@ if __name__ == "__main__":
 
     lhv.lf = add_next_day_return_target(lhv.lf)
 
-    # ['Date', 'open', 'high', 'low', 'close', 'adj close', 'volume', 'Stock_symbol', 'row_index', 'Article_title', 'summary', 'Sentiment_llm_mean_filled', 'Sentiment_llm_median_filled', 'Sentiment_llm_mode_filled', 'tokenized_headline', 'headline_len', 'embedded_headline', 'target_return']
     schema_names = lhv.lf.collect_schema().names()
 
     numeric_cols = list(NUMERIC_FEATURES)
@@ -1306,7 +1303,7 @@ if __name__ == "__main__":
                 train=f"{avg_train_loss:.4f}", val=f"{avg_val_loss:.4f}"
             )
 
-            # STore train and val losses
+            # Store train and val losses
             loss_df = pd.DataFrame({
                 "epoch": range(len(train_losses)),
                 "train_loss": train_losses,

@@ -2,9 +2,6 @@ from pathlib import Path
 import pandas as pd
 from sklearn.metrics import mean_squared_error, r2_score, median_absolute_error
 
-# for reference, the code exports csv files with 4 columns: Date, Stock_symbol, target_return, prediction
-
-
 # Redifine here, so model.py doesn't have to be run
 def get_experiment_name(use_lstm: bool, use_mdgnn: bool, llm_mode: str) -> str:
     if use_lstm and use_mdgnn:
