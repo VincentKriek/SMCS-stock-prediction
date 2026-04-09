@@ -4,10 +4,6 @@ import gc
 import pandas as pd
 import polars as pl
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
 
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import OneHotEncoder
@@ -15,7 +11,6 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import r2_score, mean_squared_error, median_absolute_error
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
 
 # Configuration
 NEWS_N_ROWS = None
@@ -25,27 +20,14 @@ ROLLING_END_DATE = "2023-12-31"
 TRAIN_MONTHS = 6
 VAL_MONTHS = 1
 TEST_MONTHS = 5
-MAX_SPLITS = 1
-
-BATCH_SIZE = 64
-HIDDEN_DIM = 128
-DROPOUT = 0.1
-MAX_EPOCHS = 100
-PATIENCE = 10
-LR = 1e-3
-WEIGHT_DECAY = 1e-5
+MAX_SPLITS = None
 
 TARGET_COL = "target_return"
 STOCK_SYMBOL = "Stock_symbol"
 PARQUET_PATH = "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
-TRAIN_PER_STOCK = False
 USE_LIN_REGR = False
 
 BASE_NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
-
-LLM_SENTIMENT_MODE = None  # "mean", "median", "mode", or None
-BASELINE_MODELS = ["linear_regression", "mlp"]
-
 output_dir = Path("data/model/output")
 
 # Data utilities
@@ -118,7 +100,6 @@ def make_halfyear_rolling_split_plans(
 
     return split_plans
 
-
 def collect_split_dataframe(
     lf: pl.LazyFrame,
     feature_cols: list[str],
@@ -144,19 +125,9 @@ def collect_split_dataframe(
     df = df.sort_values(["Date", "Stock_symbol"]).reset_index(drop=True)
     return df
 
-def train_baseline(lf: pl.LazyFrame, split_plans, feature_cols, use_lin_regr, stock_name=None):
-    if stock_name:
-        lf = lf.filter(pl.col(STOCK_SYMBOL).eq(stock_name))
-
+def train_baseline(lf: pl.LazyFrame, split_plans, feature_cols, use_lin_regr):
     mse_per_split, r2_per_split, mae_per_split = [], [], []
-    for split_idx, plan in enumerate(split_plans, start=1):
-        # print(f"\nStarting split {split_idx}...")
-        # print(
-        #     f"Train: {plan['train_start'].date()} -> {plan['train_end'].date()} | "
-        #     f"Val: {plan['val_start'].date()} -> {plan['val_end'].date()} | "
-        #     f"Test: {plan['test_start'].date()} -> {plan['test_end'].date()}"
-        # )
-
+    for _, plan in enumerate(split_plans, start=1):
         train_df = collect_split_dataframe(
             lf=lf,
             feature_cols=feature_cols,
@@ -178,7 +149,6 @@ def train_baseline(lf: pl.LazyFrame, split_plans, feature_cols, use_lin_regr, st
 
 
         if len(train_df) == 0 or len(val_df) == 0 or len(test_df) == 0:
-            # print(f"Split {split_idx} is empty. Skipping.")
             del train_df, val_df, test_df
             gc.collect()
             continue
@@ -187,50 +157,27 @@ def train_baseline(lf: pl.LazyFrame, split_plans, feature_cols, use_lin_regr, st
         train_df = pd.concat([train_df, val_df], axis=0) # train = train + val
 
         drop_cols = ["target_return", "Date"]
-        if stock_name:
-            drop_cols.append(STOCK_SYMBOL)
 
         X_train, y_train = train_df.drop(columns=drop_cols), train_df["target_return"]
         X_test, y_test = test_df.drop(columns=drop_cols), test_df["target_return"]
 
-        if not stock_name:
-            # One-hot enocde stock-symbol
-            preprocess = ColumnTransformer(
-                transformers=[
-                    ("cat", OneHotEncoder(handle_unknown="ignore"), ["Stock_symbol"]), # use 0 for unseen stocks
-                ],
-                remainder="passthrough"
-            )
+        # One-hot enocde stock-symbol
+        preprocess = ColumnTransformer(
+            transformers=[
+                ("cat", OneHotEncoder(handle_unknown="ignore"), ["Stock_symbol"]), # use 0 for unseen stocks
+            ],
+            remainder="passthrough"
+        )
 
-        if use_lin_regr:
-            # print("===== Linear Regression =====")
-
-            if not stock_name:
-                lin_regr_model = Pipeline([
-                    ("preprocess", preprocess),
-                    ("regressor", LinearRegression())
-                ])
-            else:
-                lin_regr_model = Pipeline([
-                    ("regressor", LinearRegression())
-                ])
+        if use_lin_regr: # Linear Regression
+            lin_regr_model = Pipeline([
+                ("preprocess", preprocess),
+                ("regressor", LinearRegression())
+            ])
 
             lin_regr_model.fit(X_train, y_train)
 
             preds = lin_regr_model.predict(X_test)
-
-            # dates = test_df["Date"]
-            # stocks = test_df["Stock_symbol"]
-            # results_df = pd.DataFrame({
-            #     "Date": dates,
-            #     "Stock_symbol": stocks,
-            #     "target_return": y_test,
-            #     "prediction": preds
-            # })
-            # results_df = results_df.sort_values(by=["Stock_symbol", "Date"]).reset_index(drop=True)
-            # csv_path = output_dir / f"BASE_preds_linregr_split_{split_idx}.csv"
-            # results_df.to_csv(csv_path, index=False)
-            # print(f"Predictions saved to: {csv_path}")
 
             mse = mean_squared_error(y_true=y_test, y_pred=preds)
             r2  = r2_score(y_true=y_test, y_pred=preds)
@@ -238,46 +185,21 @@ def train_baseline(lf: pl.LazyFrame, split_plans, feature_cols, use_lin_regr, st
             mse_per_split.append(mse)
             r2_per_split.append(r2)
             mae_per_split.append(mae)
-        else:
-            # print("===== MLP =====")
+        else: # MLP
             val_fraction = VAL_MONTHS / (TRAIN_MONTHS + VAL_MONTHS)
-            if not stock_name:
-                mlp_model = Pipeline([
-                    ("preprocess", preprocess),
-                    ("mlp", MLPRegressor(
-                        hidden_layer_sizes=(32,),
-                        max_iter=100,
-                        validation_fraction=val_fraction,
-                        early_stopping=True
-                    ))
-                ])
-            else:
-                mlp_model = Pipeline([
-                    ("mlp", MLPRegressor(
-                        hidden_layer_sizes=(32,),
-                        max_iter=100,
-                        validation_fraction=val_fraction,
-                        early_stopping=True
-                    ))
-                ])
+            mlp_model = Pipeline([
+                ("preprocess", preprocess),
+                ("mlp", MLPRegressor(
+                    hidden_layer_sizes=(32,),
+                    max_iter=100,
+                    validation_fraction=val_fraction,
+                    early_stopping=True
+                ))
+            ])
 
             mlp_model.fit(X_train, y_train)
 
             preds = mlp_model.predict(X_test)
-
-            # dates = test_df["Date"]
-            # stocks = test_df["Stock_symbol"]
-            # results_df = pd.DataFrame({
-            #     "Date": dates,
-            #     "Stock_symbol": stocks,
-            #     "target_return": y_test,
-            #     "prediction": preds
-            # })
-            # results_df = results_df.sort_values(by=["Stock_symbol", "Date"]).reset_index(drop=True)
-
-            # csv_path = output_dir / f"BASE_preds_mlp_split_{split_idx}.csv"
-            # results_df.to_csv(csv_path, index=False)
-            # print(f"Predictions saved to: {csv_path}")
 
             mse = mean_squared_error(y_true=y_test, y_pred=preds)
             r2  = r2_score(y_true=y_test, y_pred=preds)
@@ -330,41 +252,20 @@ def main():
     print(f"Total splits to run: {len(split_plans)}")
     print(f"Output folder: {output_dir.resolve()}")
 
-    if TRAIN_PER_STOCK:
-        stocks = lf.select(STOCK_SYMBOL).unique().collect()[STOCK_SYMBOL].to_list()
-        res = {s: ([], []) for s in stocks}
-        for s in stocks:
-            s_mses, s_r2s = train_baseline(lf, split_plans, feature_cols,use_lin_regr=USE_LIN_REGR, stock_name=s)
-            res[s] = (s_mses, s_r2s)
+    mses, r2s, maes = train_baseline(lf, split_plans, feature_cols, use_lin_regr=USE_LIN_REGR)
 
-        # Write results
-        rows = []
-        for s, (mses, r2s, maes) in res.items():
-            for i, (mse, r2, mae) in enumerate(zip(mses, r2s, maes)):
-                rows.append({
-                    "split_idx": i,
-                    "mse": mse,
-                    "r2": r2,
-                    "mae": mae
-                })
-        df = pd.DataFrame(rows)
-        model_name = "LINREGR" if USE_LIN_REGR else "MLP"
-        df.to_csv(output_dir / f"BASE_per_stock_{model_name}_metrics.csv", index=False)
-    else:
-        mses, r2s, maes = train_baseline(lf, split_plans, feature_cols, use_lin_regr=USE_LIN_REGR, stock_name=None)
-
-        # Write results
-        rows = []
-        for i, (mse, r2, mae) in enumerate(zip(mses, r2s, maes)):
-            rows.append({
-                "split_idx": i,
-                "mse": mse,
-                "medae": mae,
-                "r2": r2
-            })
-        df = pd.DataFrame(rows)
-        model_name = "LINREGR" if USE_LIN_REGR else "MLP"
-        df.to_csv(output_dir / f"BASE_{model_name}_metrics.csv", index=False)
+    # Write results
+    rows = []
+    for i, (mse, r2, mae) in enumerate(zip(mses, r2s, maes)):
+        rows.append({
+            "split_idx": i,
+            "mse": mse,
+            "medae": mae,
+            "r2": r2
+        })
+    df = pd.DataFrame(rows)
+    model_name = "LINREGR" if USE_LIN_REGR else "MLP"
+    df.to_csv(output_dir / f"BASE_{model_name}_metrics.csv", index=False)
 
 
 if __name__ == "__main__":
