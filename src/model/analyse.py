@@ -23,61 +23,22 @@ num_splits = 1
 
 output_dir = Path("data/model/output")
 
+results = []
 for s in range(1, num_splits + 1):
     csv_path = output_dir / f"preds_{experiment_name}_split_{s}.csv"
     res_df = pd.read_csv(csv_path)
 
-    mse = mean_squared_error(
-        y_true=res_df["target_return"], y_pred=res_df["prediction"]
-    )
+    mse = mean_squared_error(y_true=res_df["target_return"], y_pred=res_df["prediction"])
     r2 = r2_score(y_true=res_df["target_return"], y_pred=res_df["prediction"])
     mae = median_absolute_error(y_true=res_df["target_return"], y_pred=res_df["prediction"])
 
+    results.append({
+        "split_idx": s,
+        "mse": mse,
+        "medae": mae,
+        "r2": r2,
+    })
 
-    print(f"Overall scores (Split {s})")
-    print(f"- MSE: {mse:.6f}")
-    print(f"- R² : {r2:.6f}")
-    print(f"- MAE: {mae:.6f}")
-
-    # Print results per stock
-    results = []
-    groups = res_df.groupby("Stock_symbol")
-    for stock, group in groups:
-        group_mse = mean_squared_error(
-            y_true=group["target_return"], y_pred=group["prediction"]
-        )
-        group_r2 = r2_score(y_true=group["target_return"], y_pred=group["prediction"])
-
-        results.append({"Stock_symbol": stock, "MSE": group_mse, "R2": group_r2})
-    results = pd.DataFrame(results)
-    print("Metrics per Stock_symbol:")
-    print(results)
-
-    # Print results per day
-    results = []
-    groups = res_df.groupby("Date")
-    for date, group in groups:
-        group_mse = mean_squared_error(
-            y_true=group["target_return"], y_pred=group["prediction"]
-        )
-        group_r2 = r2_score(
-            y_true=group["target_return"], y_pred=group["prediction"]
-        )  # note that r2 needs >= 2 values to not be NaN
-
-        results.append({"Date": date, "MSE": group_mse, "R2": group_r2})
-    results = pd.DataFrame(results).sort_values(by="MSE", ascending=False)
-    print("Metrics per Date:")
-    print(results)
-
-    # Plot losses over epochs
-    csv_path = output_dir / f"losses_{experiment_name}_split_{s}.csv"
-    loss_df = pd.read_csv(csv_path)
-
-    plt.figure(figsize=(8, 6))
-    plt.plot(loss_df["epoch"], loss_df["train_loss"], label="Train Loss")
-    plt.plot(loss_df["epoch"], loss_df["val_loss"], label="Val Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Train vs Val Loss")
-    plt.legend()
-    plt.show()
+metrics_df = pd.DataFrame(results)
+metrics_file = output_dir / f"{experiment_name}_metrics.csv"
+metrics_df.to_csv(metrics_file, index=False)

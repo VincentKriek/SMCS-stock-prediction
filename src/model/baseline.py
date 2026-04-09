@@ -359,8 +359,8 @@ def main():
             rows.append({
                 "split_idx": i,
                 "mse": mse,
-                "r2": r2,
-                "mae": mae
+                "medae": mae,
+                "r2": r2
             })
         df = pd.DataFrame(rows)
         model_name = "LINREGR" if USE_LIN_REGR else "MLP"
