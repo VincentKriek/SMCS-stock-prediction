@@ -39,6 +39,7 @@ TARGET_COL = "target_return"
 STOCK_SYMBOL = "Stock_symbol"
 PARQUET_PATH = "data/pre-processor/prepared_data_2018-01-01_2023-12-31.parquet"
 TRAIN_PER_STOCK = False
+USE_LIN_REGR = False
 
 BASE_NUMERIC_FEATURES = ["open", "high", "low", "close", "adj close", "volume"]
 
@@ -329,8 +330,6 @@ def main():
     print(f"Total splits to run: {len(split_plans)}")
     print(f"Output folder: {output_dir.resolve()}")
 
-    TRAIN_PER_STOCK = False
-    USE_LIN_REGR = False
     if TRAIN_PER_STOCK:
         stocks = lf.select(STOCK_SYMBOL).unique().collect()[STOCK_SYMBOL].to_list()
         res = {s: ([], []) for s in stocks}
@@ -365,7 +364,7 @@ def main():
             })
         df = pd.DataFrame(rows)
         model_name = "LINREGR" if USE_LIN_REGR else "MLP"
-        df.to_csv(output_dir / f"BASE_global_{model_name}_metrics.csv", index=False)
+        df.to_csv(output_dir / f"BASE_{model_name}_metrics.csv", index=False)
 
 
 if __name__ == "__main__":
