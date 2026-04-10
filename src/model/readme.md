@@ -30,7 +30,6 @@ BASE_global_{model_name}_metrics.csv
 ```
 
 ### Running the proposed model
-### Running the proposed model
 
 1. First, to create the adjacency matrices for the graph, run:
 
@@ -50,7 +49,7 @@ BASE_global_{model_name}_metrics.csv
    * extraction of active institutional holdings,
    * aggregation of node and edge features.
 
-   It outputs the following**parquet files**
+   It outputs the following **parquet files**
 
    1. nodes_stock.parquet
    2. nodes_bank.parquet
